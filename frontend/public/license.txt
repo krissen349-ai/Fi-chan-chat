@@ -1,0 +1,11 @@
+Model Information:
+* title:	A Gift Box
+* source:	https://sketchfab.com/3d-models/a-gift-box-1a53662e300b4d7e9ae39eba101409ea
+* author:	Rofnay (https://sketchfab.com/Rofnay)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "A Gift Box" (https://sketchfab.com/3d-models/a-gift-box-1a53662e300b4d7e9ae39eba101409ea) by Rofnay (https://sketchfab.com/Rofnay) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
