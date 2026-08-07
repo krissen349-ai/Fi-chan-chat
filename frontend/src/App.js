@@ -29,7 +29,7 @@ import {
 
 
 // Singleton Socket connection
-const socket = io('http://192.168.18.203:5000', {
+const socket = io('https://fi-chan-chat.onrender.com', {
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
