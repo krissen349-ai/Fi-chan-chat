@@ -185,15 +185,19 @@ io.on('connection', (socket) => {
         }
     });
 
+  
     socket.on('send_message', (data) => {
-        if (!messages[data.chatId]) messages[data.chatId] = [];
-        
-        const msgObject = {
-            id: data.id || `msg-${Date.now()}`, 
-            senderId: data.senderId,
-            senderName: data.senderName || users[socket.id]?.username || "User",
-            pfp: data.pfp || users[socket.id]?.pfp || null,
-            text: data.text || "",
+    if (!messages[data.chatId]) messages[data.chatId] = [];
+    
+    // Yahan ensure karein ki data hamesha existing users se aaye
+    const sender = users[socket.id] || { username: data.senderName || "User", pfp: data.pfp };
+
+    const msgObject = {
+        id: data.id || `msg-${Date.now()}`, 
+        senderId: data.senderId,
+        senderName: sender.username, // Yahan backend se confirm ho raha hai
+        pfp: sender.pfp || data.pfp, // Backend se pfp le raha hai
+        text: data.text || "",
             image: data.image || null,
             fileUrl: data.fileUrl || null,   
             fileType: data.fileType || null, 

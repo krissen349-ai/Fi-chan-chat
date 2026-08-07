@@ -1019,8 +1019,14 @@ function App() {
                 return (
                   <div key={msg.id || index} className={`message-row ${isMe ? 'outgoing' : 'incoming'}`}>
                     <div style={{ display: 'flex', alignItems: 'flex-end', width: '100%', justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
-                      {!isMe && <img src={msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderName}`} alt="user-pfp" className="message-avatar" />}
-
+{!isMe && (
+  <img 
+    src={msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderId}`} 
+    alt="user-pfp" 
+    className="message-avatar" 
+    onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} 
+  />
+)}
                       <div className="msg-content-wrapper" style={{ position: 'relative' }}>
                         {msg.replyTo && (
                           <div className="reply-preview-in-bubble">
