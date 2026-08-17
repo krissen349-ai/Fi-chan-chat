@@ -4,6 +4,7 @@ import './App.css';
 import appLogo from './fi chat.jpg'; 
 import Gifts from './Gifts'; 
 import { getToken, isSupported } from "firebase/messaging";
+import { set, get, del } from 'idb-keyval';
 
 import { messaging } from "./firebase"; // Yeh wahi file hai jisme aapne messaging export kiya hai
 // 🔥 FIREBASE IMPORTS
@@ -148,9 +149,10 @@ function App() {
   const setActiveChat = useCallback((chatObj) => {
     setActiveChatState(chatObj);
     if (chatObj) {
-      localStorage.setItem('chat_active_chat', JSON.stringify(chatObj));
+      // 💾 IndexedDB me save karein (localStorage QuotaExceededError se bachne ke liye)
+      set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
     } else {
-      localStorage.removeItem('chat_active_chat');
+      del('chat_active_chat').catch(err => console.error("IDB Del Error:", err));
     }
   }, []);
 
@@ -158,44 +160,50 @@ function App() {
     localStorage.setItem('chat_active_tab', activeTab);
   }, [activeTab]);
 
-  // 🔥 AUTH STATE LISTENER
+  // 🔥 AUTH STATE LISTENER (Fixed Reload Persistence)
   useEffect(() => {
     let splashTimer;
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
+        // Local storage se user ki saved bio aur custom pfp read karein
         const savedBio = localStorage.getItem(`chat_bio_${user.uid}`) || "Hey there! I am using Fi-chen Chat.";
+        const savedPfp = localStorage.getItem(`chat_pfp_${user.uid}`);
+
         const finalUser = {
           id: socket.id,
           uid: user.uid, 
-          username: user.displayName || "User",
+          username: user.displayName || username || "User",
           bio: savedBio,
-          pfp: user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya`
+          // 🛑 FIX: Pehle localStorage ki saved custom/edited pfp ko preference do!
+          pfp: savedPfp || user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya`
         };
+        
         setCurrentUser(finalUser);
         setIsLoggedIn(true);
         socket.emit('login_user', finalUser);
 
-        // 🚀 Yahin par notification permission function call kar sakte hain!
-       requestNotificationPermission();
-       
+        // Notification Permission Call
+        requestNotificationPermission();
+
         setShowWelcomeSplash(true);
         splashTimer = setTimeout(() => {
           setShowWelcomeSplash(false);
         }, 2500);
 
-        const savedChat = localStorage.getItem('chat_active_chat');
-        if (savedChat) {
-          try {
-            const parsed = JSON.parse(savedChat);
-            socket.emit('join_chat', parsed.id);
-          } catch (e) {
-            localStorage.removeItem('chat_active_chat');
-          }
-        }
+        // ✅ REPLACE WITH THIS:
+get('chat_active_chat').then((savedChat) => {
+  if (savedChat) {
+    setActiveChatState(savedChat);
+    socket.emit('join_chat', savedChat.id);
+  }
+}).catch((e) => {
+  console.error("IDB Get Error:", e);
+  del('chat_active_chat');
+});
       } else {
         setIsLoggedIn(false);
         setCurrentUser(null);
-        localStorage.removeItem('chat_active_chat');
+        del('chat_active_chat');
       }
       setAuthLoading(false);
     });
@@ -204,7 +212,7 @@ function App() {
       unsubscribe();
       if (splashTimer) clearTimeout(splashTimer);
     };
-  }, []);
+  }, [username]);
 
   // Theme Toggler
   useEffect(() => {
@@ -260,7 +268,11 @@ function App() {
         const currentChatMessages = prev[data.chatId] || [];
         const isDuplicate = currentChatMessages.some(msg => msg.id === data.message.id);
         if (isDuplicate) return prev;
-        return { ...prev, [data.chatId]: [...currentChatMessages, data.message] };
+        
+        return { 
+          ...prev, 
+          [data.chatId]: [...currentChatMessages, data.message] 
+        };
       });
     };
 
@@ -325,6 +337,7 @@ function App() {
   }, [activeChat]);
 
   // Firestore Snapshot Listener
+  // 🔥 FIRESTORE REAL-TIME PRIVATE CHAT SYNCRONIZER (FIXED)
   useEffect(() => {
     if (!activeChat || !auth.currentUser) return;
     const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
@@ -337,7 +350,19 @@ function App() {
 
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const fetchedMsgs = snapshot.docs.map(doc => doc.data());
-        setMessages(prev => ({ ...prev, [activeChat.id]: fetchedMsgs }));
+        
+        // Merge fetched messages with state gracefully without losing active socket updates
+        setMessages(prev => {
+          const currentList = prev[activeChat.id] || [];
+          
+          // Map existing list to avoid duplication while keeping realtime sync
+          const msgMap = new Map();
+          currentList.forEach(m => msgMap.set(m.id, m));
+          fetchedMsgs.forEach(m => msgMap.set(m.id, m));
+
+          const mergedList = Array.from(msgMap.values()).sort((a, b) => (a.timestampRaw || 0) - (b.timestampRaw || 0));
+          return { ...prev, [activeChat.id]: mergedList };
+        });
       }, (error) => console.error("Firestore Listen Error:", error));
 
       return () => unsubscribe();
@@ -452,25 +477,27 @@ function App() {
     if (!activeChat) return;
     const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
 
+    // 1. Remove from local UI State immediately
     setMessages(prev => {
       const chatMsgs = prev[activeChat.id] ? prev[activeChat.id].filter(m => m.id !== messageId) : [];
       return { ...prev, [activeChat.id]: chatMsgs };
     });
 
+    // 2. Notify Socket Server
     socket.emit('delete_message', { chatId: activeChat.id, messageId });
     setActiveMenuMsgId(null);
 
+    // 3. Delete permanently from Firestore
     if (!isGlobal && activeChat.type === 'private') {
       try {
         const q = query(collection(db, "private_chats", activeChat.id, "messages"), where("id", "==", messageId));
         const querySnapshot = await getDocs(q);
         
-        const deletePromises = querySnapshot.docs.map((document) => 
-          deleteDoc(doc(db, "private_chats", activeChat.id, "messages", document.id))
-        );
-        await Promise.all(deletePromises);
+        querySnapshot.forEach(async (document) => {
+          await deleteDoc(doc(db, "private_chats", activeChat.id, "messages", document.id));
+        });
       } catch (err) {
-        console.error("Firestore Permanent Delete Error:", err);
+        console.error("Firestore Delete Error:", err);
       }
     }
   };
@@ -480,6 +507,9 @@ function App() {
     socket.emit('join_chat', chatObj.id);
     setReplyToMsg(null);
     setEditMsg(null);
+
+    // 💾 IndexedDB me active chat save karein (bina size limit issue ke)
+    set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
   };
 
   const handleReaction = (messageId, emoji) => {
@@ -638,19 +668,38 @@ function App() {
   const saveProfileEdit = async () => {
     if (!editUsername.trim()) return alert("Username khali nahi chodh sakte!");
     try {
+      const finalPfp = editPfp || currentUser.pfp;
+      
+      const isBase64Image = finalPfp.startsWith('data:image');
+      const safeFirebasePhotoURL = isBase64Image 
+        ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${editUsername.trim()}` 
+        : finalPfp;
+
       if (auth.currentUser) {
         await updateProfile(auth.currentUser, {
           displayName: editUsername.trim(),
-          photoURL: editPfp.trim()
+          photoURL: safeFirebasePhotoURL
         });
+        
+        // 💾 Save Bio & PFP to Local Storage permanently
         localStorage.setItem(`chat_bio_${auth.currentUser.uid}`, editBio.trim());
+        localStorage.setItem(`chat_pfp_${auth.currentUser.uid}`, finalPfp);
       }
-      const updatedUser = { ...currentUser, username: editUsername.trim(), bio: editBio.trim(), pfp: editPfp.trim() };
+      
+      const updatedUser = { 
+        ...currentUser, 
+        username: editUsername.trim(), 
+        bio: editBio.trim(), 
+        pfp: finalPfp 
+      };
+      
       setCurrentUser(updatedUser);
       socket.emit('update_profile', updatedUser);
       setIsEditingProfile(false);
+      alert("Profile updated permanently! ✨");
     } catch (error) {
-      console.error(error.message);
+      console.error("Update Error:", error.message);
+      alert(`Update Fail: ${error.message}`);
     }
   };
 
@@ -676,34 +725,52 @@ function App() {
   };
 
   const handleAuthAction = async () => {
-    if (!email.trim() || !password.trim()) return alert("Email aur Password daalna zaroori hai!");
+  if (!email.trim() || !password.trim()) return alert("Email aur Password daalna zaroori hai!");
 
-    if (isSignUp) {
-      if (!username.trim()) return alert("Username toh chun lo bhai!");
-      try {
-        const previewAvatar = customPfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
-        const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
-        const user = userCredential.user;
+  if (isSignUp) {
+    if (!username.trim()) return alert("Username toh chun lo bhai!");
+    try {
+      // ⚠️ FIX: Custom Base64 image ko photoURL me direct na bhejen agar wo long hai.
+      // Standard/Short avatar URL use karein Firebase UpdateProfile ke liye:
+      const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
+      const photoToUpdate = customPfp && customPfp.length < 2000 ? customPfp : fallbackAvatar;
 
-        await updateProfile(user, { displayName: username.trim(), photoURL: previewAvatar });
-        const userBio = editBio.trim() || "Hey there! I am using Fi-chen Chat.";
-        localStorage.setItem(`chat_bio_${user.uid}`, userBio);
-        
-        const finalUser = { id: socket.id, uid: user.uid, username: username.trim(), bio: userBio, pfp: previewAvatar };
-        setCurrentUser(finalUser);
-        setIsLoggedIn(true);
-        socket.emit('login_user', finalUser);
-      } catch (error) {
-        alert(`Signup Fail: ${error.message}`);
-      }
-    } else {
-      try {
-        await signInWithEmailAndPassword(auth, email.trim(), password.trim());
-      } catch (error) {
-        alert(`Login Fail: ${error.message}`);
-      }
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
+      const user = userCredential.user;
+
+      // Firebase profile update
+      await updateProfile(user, { 
+        displayName: username.trim(), 
+        photoURL: photoToUpdate 
+      });
+
+      const userBio = editBio.trim() || "Hey there! I am using Fi-chen Chat.";
+localStorage.setItem(`chat_bio_${user.uid}`, userBio);
+const savedPfp = localStorage.getItem(`chat_pfp_${user.uid}`);
+
+const finalUser = {
+  id: socket.id,
+  uid: user.uid,
+  username: user.displayName || "User",
+  bio: userBio, // 👈 Yahan 'userBio' likhna hai
+  pfp: savedPfp || user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya`
+};
+
+      setCurrentUser(finalUser);
+      setIsLoggedIn(true);
+      socket.emit('login_user', finalUser);
+
+    } catch (error) {
+      alert(`Signup Fail: ${error.message}`);
     }
-  };
+  } else {
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password.trim());
+    } catch (error) {
+      alert(`Login Fail: ${error.message}`);
+    }
+  }
+};
 
   if (authLoading) {
     return <div className="login-container"><div className="login-card"><h4>Loading Fi-chan chat...🚀 </h4></div></div>;
@@ -976,17 +1043,72 @@ function App() {
             <div className="profile-section animate-fade">
               {isEditingProfile ? (
                 <div className="edit-form">
-                  <input type="text" value={editUsername} onChange={e => setEditUsername(e.target.value)} placeholder="Username" />
-                  <input type="text" value={editPfp} onChange={e => setEditPfp(e.target.value)} placeholder="Avatar URL" />
-                  <textarea value={editBio} onChange={e => setEditBio(e.target.value)} placeholder="Bio..."></textarea>
-                  <button className="done-btn" onClick={saveProfileEdit}>Done</button>
+                  <div className="login-avatar-preview-box premium-avatar-wrapper" style={{ margin: '0 auto 12px auto' }}>
+                    <img src={editPfp || currentUser.pfp} alt="Profile Preview" className="login-live-avatar" />
+                  </div>
+
+                  <div className="avatar-control-buttons" style={{ marginBottom: '12px' }}>
+                    <button type="button" className="ctrl-btn shuffle-btn glass-btn" onClick={() => setShowAvatarModal(true)}>
+                      🎭 Choose Avatar
+                    </button>
+                    <label className="ctrl-btn upload-btn glass-btn">
+                      📁 Upload Photo
+                      <input type="file" accept="image/*" onChange={(e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                          if (file.size > 10 * 1024 * 1024) return alert("Image 10MB se kam ki honi chahiye!");
+                          const reader = new FileReader();
+                          reader.onloadend = () => setEditPfp(reader.result);
+                          reader.readAsDataURL(file);
+                        }
+                      }} style={{ display: 'none' }} />
+                    </label>
+                  </div>
+
+                  <div className="login-form-group" style={{ marginBottom: '10px', textAlign: 'left' }}>
+                    <label className="input-label">Username</label>
+                    <input 
+                      type="text" 
+                      className="premium-input" 
+                      value={editUsername} 
+                      onChange={e => setEditUsername(e.target.value)} 
+                      placeholder="Username" 
+                      maxLength={50} 
+                    />
+                  </div>
+
+                  <div className="login-form-group" style={{ marginBottom: '15px', textAlign: 'left' }}>
+                    <label className="input-label">Bio / Status</label>
+                    <textarea 
+                      className="premium-input textarea-input" 
+                      value={editBio} 
+                      onChange={e => setEditBio(e.target.value)} 
+                      placeholder="Write a cool bio..." 
+                      maxLength={100} 
+                      rows={2} 
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="done-btn premium-btn-gradient" style={{ flex: 1, padding: '10px', borderRadius: '8px', border: 'none', cursor: 'pointer', color: '#fff', fontWeight: 'bold' }} onClick={saveProfileEdit}>
+                      Save Changes ✨
+                    </button>
+                    <button className="glass-btn" style={{ padding: '10px 14px', borderRadius: '8px', cursor: 'pointer' }} onClick={() => setIsEditingProfile(false)}>
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="profile-view">
                   <img src={currentUser.pfp} alt="profile" className="large-pfp" />
                   <h3>{currentUser.username}</h3>
                   <p className="bio-text">"{currentUser.bio}"</p>
-                  <button className="edit-profile-btn" onClick={() => setIsEditingProfile(true)}>Edit Profile</button>
+                  <button className="edit-profile-btn" onClick={() => {
+                    setIsEditingProfile(true);
+                    setEditUsername(currentUser.username);
+                    setEditBio(currentUser.bio);
+                    setEditPfp(currentUser.pfp);
+                  }}>Edit Profile</button>
                   <button className="logout-btn" onClick={handleLogout}>Log Out</button>
                 </div>
               )}
@@ -1263,6 +1385,34 @@ function App() {
           </div>
         </div>
       )}
+
+      {showAvatarModal && (
+          <div className="avatar-modal-overlay glass-overlay" onClick={() => setShowAvatarModal(false)}>
+            <div className="avatar-modal-content glass-card animate-pop-in" onClick={(e) => e.stopPropagation()}>
+              <h3>Pick Your Style</h3>
+              <p className="modal-sub">Select from curated 3D avatar seeds</p>
+              <div className="avatar-grid custom-scrollbar">
+                {AVAILABLE_SEEDS.map((seed) => (
+                  <div 
+                    key={seed} 
+                    className={`avatar-grid-item ${avatarSeed === seed ? 'active-seed' : ''}`} 
+                    onClick={() => { 
+                      setAvatarSeed(seed); 
+                      const selectedAvatarUrl = `https://api.dicebear.com/7.x/adventurer/svg?seed=${seed}`;
+                      if (isEditingProfile) {
+                        setEditPfp(selectedAvatarUrl);
+                      }
+                      setShowAvatarModal(false); 
+                    }}
+                  >
+                    <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${seed}`} alt={seed} />
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="modal-close-btn glass-btn" onClick={() => setShowAvatarModal(false)}>Close</button>
+            </div>
+          </div>
+        )}
     </div>
   );
 }
