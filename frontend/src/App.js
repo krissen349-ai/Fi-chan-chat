@@ -35,6 +35,40 @@ const socket = io('https://fi-chan-chat.onrender.com', {
   autoConnect: true
 });
 
+// Helper Function: Base64/File Image ko fast load & small storage size ke liye compress karna
+const compressImage = (base64Str, maxWidth = 150, maxHeight = 150, quality = 0.7) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+
+      const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
+      resolve(compressedDataUrl);
+    };
+    img.onerror = () => resolve(base64Str);
+  });
+};
+
 async function requestNotificationPermission() {
   try {
     const supported = await isSupported().catch(() => false);
@@ -126,7 +160,7 @@ function App() {
     'Gideon', 'Xander', 'Sierra', 'Dustin', 'Kira', 'Nolan', 'Olivia', 'Tristan', 'Veda', 'Wyatt', 'Felix'
   ];
 
-  const EMOJIS = [
+ const EMOJIS = [
     "😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","😷","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","☠️","👽","👾","🤖","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","👍","👎","👊","✌️","👌","🤝","🙏","💪","🔥","✨","💖","❤️","🎉","🎈"
   ];
 
@@ -142,7 +176,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('chat_active_tab', activeTab);
+    try {
+      localStorage.setItem('chat_active_tab', activeTab);
+    } catch(e) { console.warn(e); }
   }, [activeTab]);
 
   useEffect(() => {
@@ -207,10 +243,10 @@ function App() {
   useEffect(() => {
     if (theme === 'light') {
       document.body.classList.add('light-theme');
-      localStorage.setItem('chat_theme', 'light');
+      try { localStorage.setItem('chat_theme', 'light'); } catch(e){}
     } else {
       document.body.classList.remove('light-theme');
-      localStorage.setItem('chat_theme', 'dark');
+      try { localStorage.setItem('chat_theme', 'dark'); } catch(e){}
     }
   }, [theme]);
 
@@ -639,9 +675,12 @@ function App() {
   const saveProfileEdit = async () => {
     if (!editUsername.trim()) return alert("Username khali nahi chodh sakte!");
     try {
-      const finalPfp = editPfp || currentUser.pfp;
-      const isBase64Image = finalPfp.startsWith('data:image');
-      const safeFirebasePhotoURL = isBase64Image 
+      let finalPfp = editPfp || currentUser.pfp;
+      if (finalPfp.startsWith('data:image')) {
+        finalPfp = await compressImage(finalPfp);
+      }
+      
+      const safeFirebasePhotoURL = finalPfp.startsWith('data:image') 
         ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${editUsername.trim()}` 
         : finalPfp;
 
@@ -651,8 +690,12 @@ function App() {
           photoURL: safeFirebasePhotoURL
         });
         
-        localStorage.setItem(`chat_bio_${auth.currentUser.uid}`, editBio.trim());
-        localStorage.setItem(`chat_pfp_${auth.currentUser.uid}`, finalPfp);
+        try {
+          localStorage.setItem(`chat_bio_${auth.currentUser.uid}`, editBio.trim());
+          localStorage.setItem(`chat_pfp_${auth.currentUser.uid}`, finalPfp);
+        } catch (storageErr) {
+          console.warn("LocalStorage Quota Exceeded during edit! Handled safely.", storageErr);
+        }
 
         await setDoc(doc(db, "users", auth.currentUser.uid), {
           uid: auth.currentUser.uid,
@@ -681,7 +724,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('chat_active_chat');
+    try { localStorage.removeItem('chat_active_chat'); } catch(e){}
     signOut(auth).then(() => window.location.reload());
   };
 
@@ -708,7 +751,11 @@ function App() {
       if (!username.trim()) return alert("Username toh chun lo bhai!");
       try {
         const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
-        const photoToSave = customPfp || fallbackAvatar;
+        let photoToSave = customPfp || fallbackAvatar;
+
+        if (photoToSave.startsWith('data:image')) {
+          photoToSave = await compressImage(photoToSave);
+        }
 
         const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
         const user = userCredential.user;
@@ -719,8 +766,13 @@ function App() {
         });
 
         const userBio = editBio.trim() || "Hey there! I am using Fi-chan Chat.";
-        localStorage.setItem(`chat_bio_${user.uid}`, userBio);
-        localStorage.setItem(`chat_pfp_${user.uid}`, photoToSave);
+        
+        try {
+          localStorage.setItem(`chat_bio_${user.uid}`, userBio);
+          localStorage.setItem(`chat_pfp_${user.uid}`, photoToSave);
+        } catch (storageErr) {
+          console.warn("LocalStorage Quota Exceeded during signup! Handled safely.", storageErr);
+        }
 
         await setDoc(doc(db, "users", user.uid), {
           uid: user.uid,
@@ -812,12 +864,15 @@ function App() {
                 </button>
                 <label className="ctrl-btn upload-btn glass-btn">
                   📁 Upload Photo
-                  <input type="file" accept="image/*" onChange={(e) => {
+                  <input type="file" accept="image/*" onChange={async (e) => {
                     const file = e.target.files[0];
                     if (file) {
                       if (file.size > 10 * 1024 * 1024) return alert("Image 10MB se kam ki honi chahiye!");
                       const reader = new FileReader();
-                      reader.onloadend = () => setCustomPfp(reader.result);
+                      reader.onloadend = async () => {
+                        const compressed = await compressImage(reader.result);
+                        setCustomPfp(compressed);
+                      };
                       reader.readAsDataURL(file);
                     }
                   }} style={{ display: 'none' }} />
@@ -1055,12 +1110,15 @@ function App() {
                     </button>
                     <label className="ctrl-btn upload-btn glass-btn">
                       📁 Upload Photo
-                      <input type="file" accept="image/*" onChange={(e) => {
+                      <input type="file" accept="image/*" onChange={async (e) => {
                         const file = e.target.files[0];
                         if (file) {
                           if (file.size > 10 * 1024 * 1024) return alert("Image 10MB se kam ki honi chahiye!");
                           const reader = new FileReader();
-                          reader.onloadend = () => setEditPfp(reader.result);
+                          reader.onloadend = async () => {
+                            const compressed = await compressImage(reader.result);
+                            setEditPfp(compressed);
+                          };
                           reader.readAsDataURL(file);
                         }
                       }} style={{ display: 'none' }} />
