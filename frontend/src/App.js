@@ -35,14 +35,10 @@ const socket = io('https://fi-chan-chat.onrender.com', {
   autoConnect: true
 });
 
-// SAFE NOTIFICATION PERMISSION
 async function requestNotificationPermission() {
   try {
     const supported = await isSupported().catch(() => false);
-    if (!supported || !messaging) {
-      console.log("Firebase Messaging not supported in this environment.");
-      return;
-    }
+    if (!supported || !messaging) return;
 
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
@@ -50,9 +46,7 @@ async function requestNotificationPermission() {
         vapidKey: 'BDlIEtQFhIRnkhFEQrkyPrZ9lyJT0tSu9PQuSYZhpKU1mff-lYLiYa2clRidpSqU51aqNjK88omNP3z7uW07fXs' 
       }).catch(err => console.log("FCM Token fetch error:", err));
 
-      if (currentToken) {
-        console.log('FCM Token:', currentToken);
-      }
+      if (currentToken) console.log('FCM Token:', currentToken);
     }
   } catch (error) {
     console.log('Notification permission error:', error);
@@ -68,7 +62,6 @@ function App() {
   const [showPassword, setShowPassword] = useState(false);
   
   const [pushNotificationAlert, setPushNotificationAlert] = useState(null);
-  
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('chat_active_tab') || 'rooms'); 
   const [theme, setTheme] = useState(() => localStorage.getItem('chat_theme') || 'dark');
   const [avatarSeed, setAvatarSeed] = useState('Amaya'); 
@@ -84,7 +77,6 @@ function App() {
   const [groupsList, setGroupsList] = useState([]);
   const [allRegisteredUsers, setAllRegisteredUsers] = useState([]);
 
-  // 🔥 SAFE FIRESTORE USERS FETCH
   useEffect(() => {
     if (!isLoggedIn || !auth.currentUser) return;
 
@@ -100,7 +92,6 @@ function App() {
   }, [isLoggedIn]);
   
   const [activeChat, setActiveChatState] = useState(null); 
-
   const [messages, setMessages] = useState({});
   const [typedMessage, setTypedMessage] = useState('');
   
@@ -154,13 +145,12 @@ function App() {
     localStorage.setItem('chat_active_tab', activeTab);
   }, [activeTab]);
 
-  // 🔥 SAFE AUTH LISTENER (ALWAYS UNBLOCKS LOADING SCREEN)
   useEffect(() => {
     let splashTimer;
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       try {
         if (user) {
-          const savedBio = localStorage.getItem(`chat_bio_${user.uid}`) || "Hey there! I am using Fi-chen Chat.";
+          const savedBio = localStorage.getItem(`chat_bio_${user.uid}`) || "Hey there! I am using Fi-chan Chat.";
           const savedPfp = localStorage.getItem(`chat_pfp_${user.uid}`);
 
           const finalUser = {
@@ -168,7 +158,7 @@ function App() {
             uid: user.uid, 
             username: user.displayName || username || "User",
             bio: savedBio,
-            pfp: savedPfp || user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya`
+            pfp: savedPfp || user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${user.displayName || 'Amaya'}`
           };
           
           setCurrentUser(finalUser);
@@ -188,7 +178,7 @@ function App() {
           setShowWelcomeSplash(true);
           splashTimer = setTimeout(() => {
             setShowWelcomeSplash(false);
-          }, 2500);
+          }, 1500);
 
           get('chat_active_chat').then((savedChat) => {
             if (savedChat) {
@@ -204,7 +194,7 @@ function App() {
       } catch (err) {
         console.error("Auth Listener Error:", err);
       } finally {
-        setAuthLoading(false); // Guarantees loading state clears!
+        setAuthLoading(false);
       }
     });
 
@@ -228,7 +218,7 @@ function App() {
     if (chatContainerRef.current) {
       const scrollTimer = setTimeout(() => {
         chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-      }, 80);
+      }, 50);
       return () => clearTimeout(scrollTimer);
     }
   }, [messages, activeChat]);
@@ -663,6 +653,14 @@ function App() {
         
         localStorage.setItem(`chat_bio_${auth.currentUser.uid}`, editBio.trim());
         localStorage.setItem(`chat_pfp_${auth.currentUser.uid}`, finalPfp);
+
+        await setDoc(doc(db, "users", auth.currentUser.uid), {
+          uid: auth.currentUser.uid,
+          username: editUsername.trim(),
+          bio: editBio.trim(),
+          pfp: finalPfp,
+          lastSeen: Date.now()
+        }, { merge: true });
       }
       
       const updatedUser = { 
@@ -710,33 +708,34 @@ function App() {
       if (!username.trim()) return alert("Username toh chun lo bhai!");
       try {
         const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
-        const photoToUpdate = customPfp && customPfp.length < 2000 ? customPfp : fallbackAvatar;
+        const photoToSave = customPfp || fallbackAvatar;
 
         const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
         const user = userCredential.user;
 
         await updateProfile(user, { 
           displayName: username.trim(), 
-          photoURL: photoToUpdate 
+          photoURL: photoToSave.startsWith('data:image') ? fallbackAvatar : photoToSave 
         });
 
-        const userBio = editBio.trim() || "Hey there! I am using Fi-chen Chat.";
+        const userBio = editBio.trim() || "Hey there! I am using Fi-chan Chat.";
         localStorage.setItem(`chat_bio_${user.uid}`, userBio);
+        localStorage.setItem(`chat_pfp_${user.uid}`, photoToSave);
 
         await setDoc(doc(db, "users", user.uid), {
           uid: user.uid,
           username: username.trim(),
           bio: userBio,
-          pfp: photoToUpdate,
+          pfp: photoToSave,
           lastSeen: Date.now()
         }, { merge: true });
 
         const finalUser = {
           id: socket.id,
           uid: user.uid,
-          username: user.displayName || "User",
+          username: username.trim(),
           bio: userBio,
-          pfp: photoToUpdate
+          pfp: photoToSave
         };
 
         setCurrentUser(finalUser);
@@ -769,7 +768,7 @@ function App() {
     return (
       <div className="welcome-splash-overlay">
         <div className="welcome-splash-card animate-pop-in">
-          <img src={currentUser?.pfp} alt="User Avatar" className="splash-avatar" />
+          <img src={currentUser?.pfp} alt="User Avatar" className="splash-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya'; }} />
           <h2>Welcome back, <span className="splash-username">@{currentUser?.username}</span>! ✨</h2>
           <p>Setting up your private workspace...</p>
           <div className="splash-loader-bar">
@@ -962,7 +961,7 @@ function App() {
             <button className="theme-toggle-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️ Light' : '🌙 Dark'}</button>
           </div>
           <div className="user-badge">
-            <img src={currentUser?.pfp} alt="me" />
+            <img src={currentUser?.pfp} alt="me" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
             <span>@{currentUser?.username}</span>
           </div>
         </div>
@@ -1028,7 +1027,7 @@ function App() {
                       className="chat-item-row" 
                       onClick={() => setShowProfileModal(user)}
                     >
-                      <img className="avatar-icon" src={user.pfp} alt="" />
+                      <img className="avatar-icon" src={user.pfp} alt="" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                       <div className="item-details">
                         <h4>{user.username}</h4>
                         <p className={isOnline ? "online-tag" : "offline-tag"}>
@@ -1047,7 +1046,7 @@ function App() {
               {isEditingProfile ? (
                 <div className="edit-form">
                   <div className="login-avatar-preview-box premium-avatar-wrapper" style={{ margin: '0 auto 12px auto' }}>
-                    <img src={editPfp || currentUser.pfp} alt="Profile Preview" className="login-live-avatar" />
+                    <img src={editPfp || currentUser.pfp} alt="Profile Preview" className="login-live-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                   </div>
 
                   <div className="avatar-control-buttons" style={{ marginBottom: '12px' }}>
@@ -1103,7 +1102,7 @@ function App() {
                 </div>
               ) : (
                 <div className="profile-view">
-                  <img src={currentUser.pfp} alt="profile" className="large-pfp" />
+                  <img src={currentUser.pfp} alt="profile" className="large-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                   <h3>{currentUser.username}</h3>
                   <p className="bio-text">"{currentUser.bio}"</p>
                   <button className="edit-profile-btn" onClick={() => {
@@ -1125,7 +1124,7 @@ function App() {
           <>
             <div className="chat-header">
               <button className="back-btn-mobile" onClick={() => setActiveChat(null)}>←</button>
-              <img className="header-avatar" src={activeChat.type === 'group' ? 'https://api.dicebear.com/7.x/identicon/svg?seed=global' : (activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`)} alt="chat-pfp" />
+              <img className="header-avatar" src={activeChat.type === 'group' ? 'https://api.dicebear.com/7.x/identicon/svg?seed=global' : (activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`)} alt="chat-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
               <div className="header-details">
                 <h3>{activeChat.name}</h3>
                 <p className="sub-header-info">{activeChat.type === 'group' ? 'Public Room Channel' : '● Active'}</p>
@@ -1355,7 +1354,7 @@ function App() {
       {showProfileModal && (
         <div className="modal-overlay">
           <div className="custom-popup-card">
-            <img src={showProfileModal.pfp} alt="" className="modal-pfp"/>
+            <img src={showProfileModal.pfp} alt="" className="modal-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }}/>
             <h3>{showProfileModal.username}</h3>
             <p className="modal-bio">"{showProfileModal.bio}"</p>
             <div className="modal-actions-row">
