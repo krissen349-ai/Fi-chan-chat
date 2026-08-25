@@ -1,8 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-// 🔥 1. Yeh line add karein
-import { getMessaging } from "firebase/messaging";
+import { getMessaging, isSupported } from "firebase/messaging";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDTqT68Af9sVxhdUwqFFRPe1GIzHfSc4X8",
@@ -19,8 +18,15 @@ const app = initializeApp(firebaseConfig);
 // Initialize Services
 const auth = getAuth(app);
 const db = getFirestore(app);
-// 🔥 2. Messaging initialize karein
-const messaging = getMessaging(app);
 
-// 🔥 3. Messaging ko bhi export karein
+// 🔥 Safety Check: Insecure HTTP / IP address par crash hone se bachane ke liye
+let messaging = null;
+isSupported().then((supported) => {
+  if (supported) {
+    messaging = getMessaging(app);
+  } else {
+    console.log("Firebase Messaging is not supported on this connection (HTTP/IP).");
+  }
+}).catch((err) => console.log("Messaging check error:", err));
+
 export { auth, db, messaging };

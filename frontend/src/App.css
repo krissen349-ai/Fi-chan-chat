@@ -961,3 +961,12 @@ body.light-theme .msg-date-tag {
 body.light-theme .msg-time-tag {
   color: #1c1c1e;
 }
+.online-tag {
+  color: #22c55e !important; /* Green color */
+  font-weight: 500;
+}
+
+.offline-tag {
+  color: #9ca3af !important; /* Grey color */
+  font-weight: 400;
+}
