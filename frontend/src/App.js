@@ -603,17 +603,10 @@ function App() {
 
   if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
 
-  // 1. Correct Resource Type & Category Detection
+  // File type classification
   let fileType = 'image';
-  let resourceType = 'image';
-
-  if (file.type.startsWith('video/')) {
-    fileType = 'video';
-    resourceType = 'video';
-  } else if (file.type.startsWith('audio/')) {
-    fileType = 'audio';
-    resourceType = 'video'; // Cloudinary treats audio files under the 'video' resource type!
-  }
+  if (file.type.startsWith('video/')) fileType = 'video';
+  if (file.type.startsWith('audio/')) fileType = 'audio';
 
   const currentUserId = getMyId();
   const now = new Date();
@@ -624,16 +617,19 @@ function App() {
   formData.append("upload_preset", "fi_chan_chat");
 
   try {
-    // Correct URL Endpoint based on resourceType
-    const res = await fetch(`https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/${resourceType}/upload`, {
+    // Cloudinary Universal Auto Endpoint
+    const res = await fetch("https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/auto/upload", {
       method: "POST",
       body: formData
     });
 
     const data = await res.json();
+
+    // Debugging output in browser console if fails
     if (!data.secure_url) {
-      console.error("Cloudinary Response Error:", data);
-      throw new Error("Upload failed");
+      console.error("Cloudinary Error Detail:", data);
+      alert(`Upload Error: ${data.error?.message || "File upload nahi ho saki"}`);
+      return;
     }
 
     const uploadedUrl = data.secure_url;
@@ -681,7 +677,7 @@ function App() {
     }
 
   } catch (error) {
-    console.error("Cloudinary Upload Error:", error);
+    console.error("Upload Catch Error:", error);
     alert("Media upload karne mein dikkat aayi!");
   }
 
