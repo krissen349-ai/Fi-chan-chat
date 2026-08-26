@@ -603,10 +603,17 @@ function App() {
 
   if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
 
-  // Dynamic Type Check
+  // 1. Correct Resource Type & Category Detection
   let fileType = 'image';
-  if (file.type.startsWith('video/')) fileType = 'video';
-  if (file.type.startsWith('audio/')) fileType = 'audio';
+  let resourceType = 'image';
+
+  if (file.type.startsWith('video/')) {
+    fileType = 'video';
+    resourceType = 'video';
+  } else if (file.type.startsWith('audio/')) {
+    fileType = 'audio';
+    resourceType = 'video'; // Cloudinary treats audio files under the 'video' resource type!
+  }
 
   const currentUserId = getMyId();
   const now = new Date();
@@ -617,13 +624,17 @@ function App() {
   formData.append("upload_preset", "fi_chan_chat");
 
   try {
-    const res = await fetch("https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/auto/upload", {
+    // Correct URL Endpoint based on resourceType
+    const res = await fetch(`https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/${resourceType}/upload`, {
       method: "POST",
       body: formData
     });
 
     const data = await res.json();
-    if (!data.secure_url) throw new Error("Upload failed");
+    if (!data.secure_url) {
+      console.error("Cloudinary Response Error:", data);
+      throw new Error("Upload failed");
+    }
 
     const uploadedUrl = data.secure_url;
 
@@ -633,7 +644,7 @@ function App() {
       senderName: currentUser?.username || "User",
       text: "",
       fileUrl: uploadedUrl,
-      fileType: fileType, // 'image' | 'video' | 'audio'
+      fileType: fileType,
       timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
       timestampRaw: now.getTime(),
