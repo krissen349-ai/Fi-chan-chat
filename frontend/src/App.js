@@ -603,15 +603,18 @@ function App() {
 
   if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
 
-  const isVideo = file.type.startsWith('video/');
+  // Dynamic Type Check
+  let fileType = 'image';
+  if (file.type.startsWith('video/')) fileType = 'video';
+  if (file.type.startsWith('audio/')) fileType = 'audio';
+
   const currentUserId = getMyId();
   const now = new Date();
   const msgId = `msg-${Date.now()}`;
 
-  // 1. Cloudinary Direct Upload
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("upload_preset", "fi_chan_chat"); // 👈 Aapka Unsigned Preset Name
+  formData.append("upload_preset", "fi_chan_chat");
 
   try {
     const res = await fetch("https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/auto/upload", {
@@ -624,14 +627,13 @@ function App() {
 
     const uploadedUrl = data.secure_url;
 
-    // 2. Message Object with Cloudinary URL
     const msgObject = {
       id: msgId,
       senderId: currentUserId,
       senderName: currentUser?.username || "User",
       text: "",
       fileUrl: uploadedUrl,
-      fileType: isVideo ? 'video' : 'image',
+      fileType: fileType, // 'image' | 'video' | 'audio'
       timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
       timestampRaw: now.getTime(),
@@ -640,13 +642,11 @@ function App() {
       reactions: {}
     };
 
-    // 3. Update UI Local State
     setMessages(prev => ({
       ...prev,
       [activeChat.id]: [...(prev[activeChat.id] || []), msgObject]
     }));
 
-    // 4. Socket Emit
     socket.emit('send_message', {
       chatId: activeChat.id,
       senderId: currentUserId,
@@ -654,7 +654,7 @@ function App() {
       pfp: currentUser?.pfp || null,
       text: "",
       fileUrl: uploadedUrl,
-      fileType: isVideo ? 'video' : 'image',
+      fileType: fileType,
       timeFormatted: msgObject.timeFormatted,
       dateFormatted: msgObject.dateFormatted,
       id: msgId,
@@ -663,7 +663,6 @@ function App() {
 
     setReplyToMsg(null);
 
-    // 5. Firestore Save
     const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
     if (!isGlobal && activeChat.type === 'private') {
       addDoc(collection(db, "private_chats", activeChat.id, "messages"), msgObject)
@@ -1377,7 +1376,7 @@ function App() {
                   <span className="emoji-stub" onClick={() => setShowEmojiPicker(!showEmojiPicker)}>😊</span>
                   
                   <label htmlFor="image-input" className="file-upload-btn">📁</label>
-                  <input type="file" accept="image/*,video/*" onChange={handleFileUpload} style={{ display: 'none' }} id="image-input" />
+                  <input type="file" accept="image/*,video/*,audio/*" onChange={handleFileUpload} style={{ display: 'none' }} id="image-input" />
                   
                   <button 
                     type="button" 
