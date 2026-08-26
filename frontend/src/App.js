@@ -598,63 +598,85 @@ function App() {
   };
 
   const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file || !activeChat) return;
+  const file = e.target.files[0];
+  if (!file || !activeChat) return;
 
-    if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
+  if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
 
-    const isVideo = file.type.startsWith('video/');
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result;
-      const msgId = `msg-${Date.now()}`;
-      const currentUserId = getMyId();
-      const now = new Date();
-      
-      const msgObject = {
-        id: msgId,
-        senderId: currentUserId,
-        senderName: currentUser?.username || "User",
-        text: "",
-        fileUrl: base64String,
-        fileType: isVideo ? 'video' : 'image',
-        timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestampRaw: now.getTime(),
-        seenBy: [currentUserId],
-        replyTo: replyToMsg ? { id: replyToMsg.id, senderName: replyToMsg.senderName, text: replyToMsg.text || "📷 Attachment" } : null,
-        reactions: {}
-      };
+  const isVideo = file.type.startsWith('video/');
+  const currentUserId = getMyId();
+  const now = new Date();
+  const msgId = `msg-${Date.now()}`;
 
-      setMessages(prev => ({
-        ...prev,
-        [activeChat.id]: [...(prev[activeChat.id] || []), msgObject]
-      }));
+  // 1. Cloudinary Direct Upload
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("upload_preset", "fi_chan_chat"); // 👈 Aapka Unsigned Preset Name
 
-      socket.emit('send_message', {
-        chatId: activeChat.id,
-        senderId: currentUserId,
-        senderName: currentUser?.username || "User",
-        pfp: currentUser?.pfp || null,
-        text: "",
-        fileUrl: base64String,
-        fileType: isVideo ? 'video' : 'image',
-        timeFormatted: msgObject.timeFormatted,
-        dateFormatted: msgObject.dateFormatted,
-        id: msgId,
-        replyTo: msgObject.replyTo
-      });
-      setReplyToMsg(null);
+  try {
+    const res = await fetch("https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/auto/upload", {
+      method: "POST",
+      body: formData
+    });
 
-      const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
-      if (!isGlobal && activeChat.type === 'private') {
-        addDoc(collection(db, "private_chats", activeChat.id, "messages"), msgObject)
-          .catch(error => console.error("Firestore Upload Error:", error));
-      }
+    const data = await res.json();
+    if (!data.secure_url) throw new Error("Upload failed");
+
+    const uploadedUrl = data.secure_url;
+
+    // 2. Message Object with Cloudinary URL
+    const msgObject = {
+      id: msgId,
+      senderId: currentUserId,
+      senderName: currentUser?.username || "User",
+      text: "",
+      fileUrl: uploadedUrl,
+      fileType: isVideo ? 'video' : 'image',
+      timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+      timestampRaw: now.getTime(),
+      seenBy: [currentUserId],
+      replyTo: replyToMsg ? { id: replyToMsg.id, senderName: replyToMsg.senderName, text: replyToMsg.text || "📷 Attachment" } : null,
+      reactions: {}
     };
-    reader.readAsDataURL(file);
-    e.target.value = "";
-  };  
+
+    // 3. Update UI Local State
+    setMessages(prev => ({
+      ...prev,
+      [activeChat.id]: [...(prev[activeChat.id] || []), msgObject]
+    }));
+
+    // 4. Socket Emit
+    socket.emit('send_message', {
+      chatId: activeChat.id,
+      senderId: currentUserId,
+      senderName: currentUser?.username || "User",
+      pfp: currentUser?.pfp || null,
+      text: "",
+      fileUrl: uploadedUrl,
+      fileType: isVideo ? 'video' : 'image',
+      timeFormatted: msgObject.timeFormatted,
+      dateFormatted: msgObject.dateFormatted,
+      id: msgId,
+      replyTo: msgObject.replyTo
+    });
+
+    setReplyToMsg(null);
+
+    // 5. Firestore Save
+    const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
+    if (!isGlobal && activeChat.type === 'private') {
+      addDoc(collection(db, "private_chats", activeChat.id, "messages"), msgObject)
+        .catch(error => console.error("Firestore Upload Error:", error));
+    }
+
+  } catch (error) {
+    console.error("Cloudinary Upload Error:", error);
+    alert("Media upload karne mein dikkat aayi!");
+  }
+
+  e.target.value = "";
+};
 
   const handleTypingInput = (e) => {
     setTypedMessage(e.target.value);
