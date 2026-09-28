@@ -16,11 +16,32 @@ const messaging = firebase.messaging();
 // Optional: Agar app background mein ho aur notification aaye toh yahan handle hoti hai
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] Received background message ', payload);
-  const notificationTitle = payload.notification.title;
+  const data = payload.data || {};
+  const notificationTitle = data.title || payload.notification?.title || 'Fi-chan Chat';
   const notificationOptions = {
-    body: payload.notification.body,
-    icon: '/favicon.ico' // Aap chahein toh apna icon laga sakte hain
+    body: data.body || payload.notification?.body || 'You received a new message.',
+    icon: data.icon || '/fi-chan-logo.jpg',
+    data: { url: data.url || '/', chatId: data.chatId || '' }
   };
 
-  self.registration.showNotification(notificationTitle, notificationOptions);
+  return self.registration.showNotification(notificationTitle, notificationOptions);
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const notificationData = event.notification.data || {};
+  const appUrl = new URL(notificationData.url || '/', self.location.origin);
+  if (notificationData.chatId) {
+    appUrl.searchParams.set('chatId', notificationData.chatId);
+  }
+
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+    for (const client of clients) {
+      if (new URL(client.url).origin === self.location.origin) {
+        client.postMessage({ type: 'OPEN_CHAT', chatId: notificationData.chatId || '' });
+        return client.focus();
+      }
+    }
+    return self.clients.openWindow(appUrl.href);
+  }));
 });

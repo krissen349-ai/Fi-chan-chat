@@ -19,14 +19,11 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// 🔥 Safety Check: Insecure HTTP / IP address par crash hone se bachane ke liye
-let messaging = null;
-isSupported().then((supported) => {
-  if (supported) {
-    messaging = getMessaging(app);
-  } else {
-    console.log("Firebase Messaging is not supported on this connection (HTTP/IP).");
-  }
-}).catch((err) => console.log("Messaging check error:", err));
+const messagingPromise = isSupported()
+  .then((supported) => supported ? getMessaging(app) : null)
+  .catch((error) => {
+    console.warn("Firebase Messaging is unavailable:", error);
+    return null;
+  });
 
-export { auth, db, messaging };
+export { auth, db, messagingPromise };

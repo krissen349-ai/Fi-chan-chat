@@ -1,0 +1,126 @@
+import React, { useState, useEffect } from 'react';
+import './GameModal.css';
+
+const GameModal = ({ socket, activeChat, currentUser, onClose }) => {
+  const [board, setBoard] = useState(Array(9).fill(null));
+  const [isMyTurn, setIsMyTurn] = useState(false);
+  const [mySymbol, setMySymbol] = useState('');
+  const [statusText, setStatusText] = useState('Waiting for opponent...');
+  const [winner, setWinner] = useState(null);
+
+  // Both users will generate EXACT SAME Room ID regardless of who opens it
+  const currentUserId = currentUser?.username || currentUser?.uid || currentUser?.id || 'user1';
+  const peerUserId = activeChat?.username || activeChat?.id || activeChat?.uid || 'user2';
+
+  // Sort alphabetically so room name matches on both sides
+  const sortedUserIds = [String(currentUserId), String(peerUserId)].sort();
+  const roomGameId = `game_${sortedUserIds[0]}_${sortedUserIds[1]}`;
+
+  useEffect(() => {
+    if (!socket) return;
+
+    // Join room on mount
+    socket.emit('join_game', { 
+      roomGameId, 
+      userId: currentUserId,
+      username: currentUser?.username || 'Guest' 
+    });
+
+    const handleInit = ({ symbol, turn, playerCount }) => {
+      setMySymbol(symbol);
+      setIsMyTurn(turn === symbol);
+
+      if (playerCount < 2) {
+        setStatusText('Waiting for opponent to open game...');
+      } else {
+        setStatusText(turn === symbol ? "Your turn! (Play)" : "Opponent's turn...");
+      }
+    };
+
+    const handleMoveMade = ({ newBoard, nextTurn, winnerSymbol }) => {
+      setBoard(newBoard);
+
+      if (winnerSymbol) {
+        if (winnerSymbol === 'DRAW') {
+          setStatusText("It's a Draw! 🤝");
+        } else {
+          setWinner(winnerSymbol);
+          setStatusText(winnerSymbol === mySymbol ? "You Won! 🎉" : "Opponent Won! ❌");
+        }
+        setIsMyTurn(false);
+      } else {
+        setIsMyTurn(nextTurn === mySymbol);
+        setStatusText(nextTurn === mySymbol ? "Your turn!" : "Opponent's turn...");
+      }
+    };
+
+    const handleGameReset = ({ turn }) => {
+      setBoard(Array(9).fill(null));
+      setWinner(null);
+      setIsMyTurn(turn === mySymbol);
+      setStatusText(turn === mySymbol ? "Game Restarted! Your turn!" : "Game Restarted! Opponent's turn...");
+    };
+
+    socket.on('game_init', handleInit);
+    socket.on('move_made', handleMoveMade);
+    socket.on('game_reset', handleGameReset);
+
+    return () => {
+      socket.off('game_init', handleInit);
+      socket.off('move_made', handleMoveMade);
+      socket.off('game_reset', handleGameReset);
+    };
+  }, [socket, roomGameId, currentUserId, currentUser, mySymbol]);
+
+  const handleClick = (index) => {
+    if (!isMyTurn || board[index] || winner) return;
+
+    const newBoard = [...board];
+    newBoard[index] = mySymbol;
+
+    socket.emit('make_move', {
+      roomGameId,
+      newBoard,
+      symbol: mySymbol
+    });
+  };
+
+  const handleReset = () => {
+    socket.emit('reset_game', { roomGameId });
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="game-modal-card animate-pop-in">
+        <div className="game-header">
+          <h3>🎮 Tic-Tac-Toe</h3>
+          <button className="close-game-btn" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="game-status-bar">
+          <p>{statusText}</p>
+          {mySymbol && <span className="symbol-badge">You: {mySymbol}</span>}
+        </div>
+
+        <div className="tic-tac-toe-board">
+          {board.map((cell, index) => (
+            <button
+              key={index}
+              className={`game-cell ${cell ? 'filled' : ''}`}
+              onClick={() => handleClick(index)}
+              disabled={!isMyTurn || cell || winner}
+            >
+              {cell}
+            </button>
+          ))}
+        </div>
+
+        <div className="game-footer">
+          <button className="reset-game-btn" onClick={handleReset}>Restart Game</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default GameModal;

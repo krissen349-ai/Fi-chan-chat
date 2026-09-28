@@ -3,11 +3,11 @@ import React, { useState, useEffect, useRef } from 'react';
 const BirthdayGame = ({ onFinish }) => {
   const canvasRef = useRef(null);
 
-  // States only for React UI overlays
   const [currentNumber, setCurrentNumber] = useState(1);
   const [gameOver, setGameOver] = useState(false);
+  const [feedbackText, setFeedbackText] = useState(null);
+  const [comboCount, setComboCount] = useState(0);
 
-  // Core Game State Engine via Refs
   const gameState = useRef({
     currentNumber: 1,
     isShooting: false,
@@ -17,93 +17,213 @@ const BirthdayGame = ({ onFinish }) => {
     arrowPos: { x: 0, y: 0 },
     arrowVel: { vx: 0, vy: 0 },
     arrowAngle: 0,
+    arrowTrail: [],
     particles: [],
+    shockwaves: [],
     confetti: [],
-    floatOffset: 0
+    stars: [],
+    shakeTime: 0,
+    floatOffset: 0,
+    balloonAngle: 0,
+    combo: 0,
+    timeDilation: 1,
+    lastPullDist: 0
   });
 
-  // Sound Engine
-  const playPopSound = () => {
+  // High-Quality Studio Sound Generator Engine
+  const playHDAudio = (type, param = 0) => {
     try {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (!AudioContext) return;
       const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
 
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(600, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.12);
+      if (type === 'stretch') {
+        // High-Quality Wooden Tension Creak Simulation (Granular noise + resonance)
+        const bufferSize = ctx.sampleRate * 0.08;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.3));
+        }
 
-      gain.gain.setValueAtTime(0.8, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
 
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(300 + param * 8, ctx.currentTime);
+        filter.Q.value = 12.0;
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+        noise.start();
+      } else if (type === 'release') {
+        // Heavy Snap + Low Punch Whoosh
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(380, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.16);
+
+        gain.gain.setValueAtTime(0.6, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.16);
+
+        // Sub-bass Thump
+        const sub = ctx.createOscillator();
+        const subGain = ctx.createGain();
+        sub.type = 'sine';
+        sub.frequency.setValueAtTime(150, ctx.currentTime);
+        sub.frequency.exponentialRampToValueAtTime(30, ctx.currentTime + 0.18);
+        subGain.gain.setValueAtTime(0.8, ctx.currentTime);
+        subGain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.18);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        sub.connect(subGain);
+        subGain.connect(ctx.destination);
+
+        osc.start();
+        sub.start();
+        osc.stop(ctx.currentTime + 0.16);
+        sub.stop(ctx.currentTime + 0.18);
+      } else if (type === 'pop') {
+        // Punchy Glass/Balloon Crash Noise
+        const bufferSize = ctx.sampleRate * 0.12;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1);
+        }
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(1800 + param * 200, ctx.currentTime);
+        filter.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.12);
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.9, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+        noise.start();
+      } else if (type === 'miss') {
+        // Disappointed Metallic Thud
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(50, ctx.currentTime + 0.22);
+
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.22);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.22);
+      } else if (type === 'win') {
+        // Epic Celebration Synth Chord
+        const freqs = [261.63, 329.63, 392.00, 523.25, 659.25];
+        freqs.forEach((f, index) => {
+          setTimeout(() => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = f;
+            gain.gain.setValueAtTime(0.35, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.8);
+          }, index * 90);
+        });
+      }
     } catch (e) {}
   };
 
-  const playWinSong = () => {
-    try {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContext) return;
-      const ctx = new AudioContext();
-      const notes = [261.63, 261.63, 293.66, 261.63, 349.23, 329.63, 392.00];
-      notes.forEach((freq, index) => {
-        setTimeout(() => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.value = freq;
-          gain.gain.setValueAtTime(0.3, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start();
-          osc.stop(ctx.currentTime + 0.35);
-        }, index * 250);
-      });
-    } catch (e) {}
+  const showFeedback = (text, type = 'miss') => {
+    setFeedbackText({ text, type, id: Date.now() });
+    setTimeout(() => {
+      setFeedbackText(null);
+    }, 1100);
   };
 
-  // Create Pop Particle Burst Effect
+  // Shockwave Explosions
+  const spawnShockwave = (x, y, color) => {
+    gameState.current.shockwaves.push({
+      x,
+      y,
+      radius: 5,
+      maxRadius: 65,
+      alpha: 1.0,
+      color
+    });
+  };
+
+  // High Density Particles
   const spawnPopParticles = (x, y, color) => {
-    for (let i = 0; i < 16; i++) {
+    gameState.current.shakeTime = 18; // Massive Shake
+    spawnShockwave(x, y, color);
+
+    for (let i = 0; i < 55; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = Math.random() * 6 + 2;
+      const speed = Math.random() * 14 + 4;
       gameState.current.particles.push({
         x,
         y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        radius: Math.random() * 4 + 2,
+        radius: Math.random() * 6 + 2,
         color,
         alpha: 1,
-        life: 1.0
+        life: 1.0,
+        decay: Math.random() * 0.035 + 0.018
       });
     }
   };
 
-  // Create Win Celebration Confetti
   const triggerWinConfetti = () => {
-    const colors = ['#f43f5e', '#fbbf24', '#3b82f6', '#10b981', '#a855f7', '#ec4899'];
-    for (let i = 0; i < 120; i++) {
+    const colors = ['#f43f5e', '#fbbf24', '#3b82f6', '#10b981', '#a855f7', '#ec4899', '#38bdf8'];
+    for (let i = 0; i < 350; i++) {
       gameState.current.confetti.push({
         x: Math.random() * 800,
-        y: -20 - Math.random() * 200,
-        vx: (Math.random() - 0.5) * 4,
-        vy: Math.random() * 4 + 3,
+        y: -20 - Math.random() * 400,
+        vx: (Math.random() - 0.5) * 8,
+        vy: Math.random() * 6 + 4,
         color: colors[Math.floor(Math.random() * colors.length)],
-        size: Math.random() * 8 + 4,
+        size: Math.random() * 10 + 4,
         rotation: Math.random() * 360,
-        rotSpeed: (Math.random() - 0.5) * 10
+        rotSpeed: (Math.random() - 0.5) * 16
       });
     }
   };
 
-  // Canvas Main Loop
+  useEffect(() => {
+    const stars = [];
+    for (let i = 0; i < 80; i++) {
+      stars.push({
+        x: Math.random() * 800,
+        y: Math.random() * 500,
+        size: Math.random() * 2.5 + 1,
+        alpha: Math.random(),
+        speed: Math.random() * 0.03 + 0.008
+      });
+    }
+    gameState.current.stars = stars;
+  }, []);
+
+  // Main Rendering Loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -115,254 +235,321 @@ const BirthdayGame = ({ onFinish }) => {
     const render = () => {
       const state = gameState.current;
       const currNum = state.currentNumber;
+      const dt = state.timeDilation;
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
 
-      // 1. Background Gradient
-      const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      bgGrad.addColorStop(0, '#111827');
-      bgGrad.addColorStop(1, '#1e1b4b');
+      // Screen Shake
+      if (state.shakeTime > 0) {
+        const dx = (Math.random() - 0.5) * state.shakeTime * 1.6;
+        const dy = (Math.random() - 0.5) * state.shakeTime * 1.6;
+        ctx.translate(dx, dy);
+        state.shakeTime -= 1;
+      }
+
+      ctx.clearRect(-30, -30, canvas.width + 60, canvas.height + 60);
+
+      // Sci-Fi Dynamic BG
+      const bgGrad = ctx.createRadialGradient(
+        canvas.width / 2, canvas.height / 2, 50,
+        canvas.width / 2, canvas.height / 2, 550
+      );
+      bgGrad.addColorStop(0, '#1e1b4b');
+      bgGrad.addColorStop(0.5, '#0f172a');
+      bgGrad.addColorStop(1, '#020617');
       ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(-30, -30, canvas.width + 60, canvas.height + 60);
 
-      // Positions Calculation
+      // Stars
+      state.stars.forEach((star) => {
+        star.alpha += star.speed;
+        if (star.alpha > 1 || star.alpha < 0) star.speed = -star.speed;
+        ctx.fillStyle = `rgba(255, 255, 255, ${Math.abs(star.alpha)})`;
+        ctx.fillRect(star.x, star.y, star.size, star.size);
+      });
+
+      // Target Movement Logic
+      state.floatOffset += 0.05 * dt;
+      let floatY = Math.sin(state.floatOffset) * 16;
+      let floatX = 0;
+
+      if (currNum > 7) {
+        state.balloonAngle += 0.04 * dt;
+        floatX = Math.cos(state.balloonAngle) * (currNum > 14 ? 38 : 22);
+      }
+
       const bowX = canvas.width * 0.15;
       const bowY = canvas.height * 0.65;
 
-      // Floating Balloon Offset
-      state.floatOffset += 0.04;
-      const floatY = Math.sin(state.floatOffset) * 12;
-
       const baseTargetX = currNum === 21 
-        ? canvas.width * 0.8 
-        : canvas.width * 0.58 + ((currNum * 7) % 3) * (canvas.width * 0.08);
+        ? canvas.width * 0.78 
+        : canvas.width * 0.55 + ((currNum * 9) % 4) * (canvas.width * 0.075);
       
       const baseTargetY = currNum === 21 
-        ? canvas.height * 0.3 
-        : canvas.height * 0.55 - ((currNum * 23) % (canvas.height * 0.3));
+        ? canvas.height * 0.35 
+        : canvas.height * 0.52 - ((currNum * 17) % (canvas.height * 0.28));
 
-      const targetX = baseTargetX;
+      const targetX = baseTargetX + floatX;
       const targetY = baseTargetY + floatY;
-      const balloonRadius = currNum === 21 ? 30 : 26;
-      const balloonColor = currNum === 21 ? '#fbbf24' : '#e11d48';
+      const balloonRadius = currNum === 21 ? 38 : 27;
+      const balloonColor = currNum === 21 ? '#fbbf24' : currNum % 2 === 0 ? '#ec4899' : '#f43f5e';
 
-      // 2. Render Target Balloon
+      // Draw Balloon
       if (!gameOver) {
-        // String
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 1.8;
         ctx.beginPath();
         ctx.moveTo(targetX, targetY + balloonRadius * 1.2);
-        ctx.bezierCurveTo(targetX - 5, targetY + 40, targetX + 5, targetY + 60, targetX, targetY + 75);
+        ctx.bezierCurveTo(targetX - 8, targetY + 40, targetX + 8, targetY + 60, targetX, targetY + 80);
         ctx.stroke();
 
-        // Balloon Body Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.2)';
-        ctx.beginPath();
-        ctx.ellipse(targetX + 4, targetY + 4, balloonRadius, balloonRadius * 1.25, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.shadowBlur = currNum === 21 ? 35 : 20;
+        ctx.shadowColor = balloonColor;
 
-        // 🎯 Solid Clean Color Fill (HIGHLIGHTS REMOVED)
         ctx.fillStyle = balloonColor;
         ctx.beginPath();
         ctx.ellipse(targetX, targetY, balloonRadius, balloonRadius * 1.25, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        // Balloon Knot
-        ctx.fillStyle = balloonColor;
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
         ctx.beginPath();
-        ctx.moveTo(targetX - 4, targetY + balloonRadius * 1.2);
-        ctx.lineTo(targetX + 4, targetY + balloonRadius * 1.2);
-        ctx.lineTo(targetX, targetY + balloonRadius * 1.2 - 4);
+        ctx.ellipse(targetX - balloonRadius * 0.3, targetY - balloonRadius * 0.4, balloonRadius * 0.3, balloonRadius * 0.18, -Math.PI / 4, 0, Math.PI * 2);
         ctx.fill();
 
-        if (currNum === 21) {
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-        }
-
-        // Balloon Text
         ctx.fillStyle = '#FFFFFF';
-        ctx.font = '900 18px sans-serif';
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = '#000';
+        ctx.font = '900 22px system-ui';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(currNum, targetX, targetY);
+        ctx.shadowBlur = 0;
       }
 
-      // Calculate Pull Angles & Distance
+      // Drag Angle Math
       let pullAngle = 0;
       let pullDistance = 0;
       if (state.isDragging) {
         const dx = state.dragStart.x - state.dragCurrent.x;
         const dy = state.dragStart.y - state.dragCurrent.y;
         pullAngle = Math.atan2(dy, dx);
-        pullDistance = Math.min(Math.hypot(dx, dy), 100);
+        pullDistance = Math.min(Math.hypot(dx, dy), 125);
+
+        // Sound Trigger on Pull Thresholds
+        if (Math.abs(pullDistance - state.lastPullDist) > 12) {
+          playHDAudio('stretch', pullDistance);
+          state.lastPullDist = pullDistance;
+        }
       }
 
-      // 3. Render Bow
+      // Render Bow
       ctx.save();
       ctx.translate(bowX, bowY);
       ctx.rotate(pullAngle);
 
-      // Wooden Arch Body
-      ctx.strokeStyle = '#854d0e';
-      ctx.lineWidth = 7;
+      ctx.strokeStyle = '#38bdf8';
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#0284c7';
+      ctx.lineWidth = 8.5;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(0, 0, 42, -Math.PI / 2.2, Math.PI / 2.2, false);
+      ctx.arc(0, 0, 50, -Math.PI / 2.1, Math.PI / 2.1, false);
       ctx.stroke();
 
-      // Grip Center
-      ctx.strokeStyle = '#27272a';
-      ctx.lineWidth = 9;
+      ctx.strokeStyle = '#0f172a';
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 11;
       ctx.beginPath();
-      ctx.arc(0, 0, 42, -Math.PI / 12, Math.PI / 12, false);
+      ctx.arc(0, 0, 50, -Math.PI / 10, Math.PI / 10, false);
       ctx.stroke();
 
-      // Metallic Bow Nocks
-      ctx.fillStyle = '#e4e4e7';
-      const topNockX = 42 * Math.cos(-Math.PI / 2.2);
-      const topNockY = 42 * Math.sin(-Math.PI / 2.2);
-      const botNockX = 42 * Math.cos(Math.PI / 2.2);
-      const botNockY = 42 * Math.sin(Math.PI / 2.2);
+      const topNockX = 50 * Math.cos(-Math.PI / 2.1);
+      const topNockY = 50 * Math.sin(-Math.PI / 2.1);
+      const botNockX = 50 * Math.cos(Math.PI / 2.1);
+      const botNockY = 50 * Math.sin(Math.PI / 2.1);
 
-      ctx.beginPath();
-      ctx.arc(topNockX, topNockY, 4, 0, Math.PI * 2);
-      ctx.arc(botNockX, botNockY, 4, 0, Math.PI * 2);
-      ctx.fill();
-
-      // String Logic
       ctx.strokeStyle = '#f8fafc';
-      ctx.lineWidth = 1.8;
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
       ctx.moveTo(topNockX, topNockY);
-      
-      if (state.isDragging) {
-        ctx.lineTo(-pullDistance * 0.8, 0);
-      } else {
-        ctx.lineTo(0, 0);
-      }
-      
+      ctx.lineTo(state.isDragging ? -pullDistance * 0.85 : 0, 0);
       ctx.lineTo(botNockX, botNockY);
       ctx.stroke();
       ctx.restore();
 
-      // Helper function to draw an Arrow
+      // Draw Arrow
       const drawArrow = (x, y, angle) => {
         ctx.save();
         ctx.translate(x, y);
         ctx.rotate(angle);
 
-        // Arrow Shaft
-        ctx.strokeStyle = '#e2e8f0';
-        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#f43f5e';
+
+        ctx.strokeStyle = '#f8fafc';
+        ctx.lineWidth = 3.5;
         ctx.beginPath();
-        ctx.moveTo(-35, 0);
-        ctx.lineTo(10, 0);
+        ctx.moveTo(-38, 0);
+        ctx.lineTo(14, 0);
         ctx.stroke();
 
-        // Metallic Head
-        ctx.fillStyle = '#94a3b8';
+        ctx.fillStyle = '#f43f5e';
         ctx.beginPath();
-        ctx.moveTo(10, -5);
-        ctx.lineTo(22, 0);
-        ctx.lineTo(10, 5);
+        ctx.moveTo(14, -7);
+        ctx.lineTo(28, 0);
+        ctx.lineTo(14, 7);
         ctx.closePath();
         ctx.fill();
 
-        // Feathers (Fletching)
-        ctx.fillStyle = '#f43f5e';
+        ctx.fillStyle = '#fbbf24';
         ctx.beginPath();
-        ctx.moveTo(-35, 0);
-        ctx.lineTo(-43, -6);
-        ctx.lineTo(-30, 0);
-        ctx.lineTo(-43, 6);
+        ctx.moveTo(-38, 0);
+        ctx.lineTo(-48, -8);
+        ctx.lineTo(-32, 0);
+        ctx.lineTo(-48, 8);
         ctx.closePath();
         ctx.fill();
 
         ctx.restore();
       };
 
-      // 4. Trajectory Line & Aiming Arrow
+      // Trajectory Line
       if (state.isDragging && !state.isShooting) {
         const dx = state.dragStart.x - state.dragCurrent.x;
         const dy = state.dragStart.y - state.dragCurrent.y;
         
-        const simVx = dx * 0.35;
-        const simVy = dy * 0.35;
+        const simVx = dx * 0.38;
+        const simVy = dy * 0.38;
 
-        // Trajectory Guide Dots
-        ctx.fillStyle = 'rgba(244, 63, 94, 0.7)';
-        let simX = bowX - (pullDistance * 0.8) * Math.cos(pullAngle);
-        let simY = bowY - (pullDistance * 0.8) * Math.sin(pullAngle);
+        let simX = bowX - (pullDistance * 0.85) * Math.cos(pullAngle);
+        let simY = bowY - (pullDistance * 0.85) * Math.sin(pullAngle);
         let currVx = simVx;
         let currVy = simVy;
 
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 26; i++) {
           simX += currVx;
           simY += currVy;
           currVy += gravity;
 
+          ctx.fillStyle = `rgba(244, 63, 94, ${1 - i / 26})`;
           ctx.beginPath();
-          ctx.arc(simX, simY, 3, 0, Math.PI * 2);
+          ctx.arc(simX, simY, 4 - (i / 26) * 2.5, 0, Math.PI * 2);
           ctx.fill();
         }
 
-        // Draw Ready Arrow attached to bow string
-        const arrowX = bowX - (pullDistance * 0.8) * Math.cos(pullAngle);
-        const arrowY = bowY - (pullDistance * 0.8) * Math.sin(pullAngle);
+        const arrowX = bowX - (pullDistance * 0.85) * Math.cos(pullAngle);
+        const arrowY = bowY - (pullDistance * 0.85) * Math.sin(pullAngle);
         drawArrow(arrowX, arrowY, pullAngle);
       }
 
-      // Idle Bow Arrow (When waiting to shoot)
       if (!state.isDragging && !state.isShooting && !gameOver) {
         drawArrow(bowX, bowY, 0);
       }
 
-      // 5. Shot Arrow Flight Physics & Collision
+      // Flight Physics
       if (state.isShooting) {
-        state.arrowPos.x += state.arrowVel.vx;
-        state.arrowPos.y += state.arrowVel.vy;
-        state.arrowVel.vy += gravity;
+        state.arrowPos.x += state.arrowVel.vx * dt;
+        state.arrowPos.y += state.arrowVel.vy * dt;
+        state.arrowVel.vy += gravity * dt;
 
         state.arrowAngle = Math.atan2(state.arrowVel.vy, state.arrowVel.vx);
+
+        state.arrowTrail.push({
+          x: state.arrowPos.x,
+          y: state.arrowPos.y,
+          alpha: 1.0
+        });
+
+        for (let i = state.arrowTrail.length - 1; i >= 0; i--) {
+          const t = state.arrowTrail[i];
+          t.alpha -= 0.08;
+          if (t.alpha <= 0) {
+            state.arrowTrail.splice(i, 1);
+            continue;
+          }
+          ctx.fillStyle = `rgba(56, 189, 248, ${t.alpha})`;
+          ctx.beginPath();
+          ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
         drawArrow(state.arrowPos.x, state.arrowPos.y, state.arrowAngle);
 
-        // Hit Detection Calculation
+        // Hit Detection
         const dist = Math.hypot(state.arrowPos.x - targetX, state.arrowPos.y - targetY);
-        if (dist < balloonRadius + 10) {
-          playPopSound();
+        if (dist < balloonRadius + 14) {
+          state.combo += 1;
+          setComboCount(state.combo);
+          
+          playHDAudio('pop', state.combo);
           spawnPopParticles(targetX, targetY, balloonColor);
+          
+          if (state.combo > 1) {
+            showFeedback(`${state.combo}x ULTRA COMBO!`, 'hit');
+          } else {
+            showFeedback('TARGET DESTROYED!', 'hit');
+          }
+
           state.isShooting = false;
+          state.arrowTrail = [];
 
           if (state.currentNumber < 21) {
             state.currentNumber += 1;
             setCurrentNumber(state.currentNumber);
           } else {
-            setGameOver(true);
-            playWinSong();
-            triggerWinConfetti();
+            state.timeDilation = 0.2; // Slow Motion
+            setTimeout(() => {
+              setGameOver(true);
+              playHDAudio('win');
+              triggerWinConfetti();
+            }, 800);
           }
         }
 
-        // Canvas Boundary Check
+        // Missed
         if (
-          state.arrowPos.x > canvas.width + 50 || 
-          state.arrowPos.y > canvas.height + 50 || 
+          state.arrowPos.x > canvas.width + 60 || 
+          state.arrowPos.y > canvas.height + 60 || 
           state.arrowPos.y < -100
         ) {
           state.isShooting = false;
+          state.arrowTrail = [];
+          state.combo = 0;
+          setComboCount(0);
+          
+          playHDAudio('miss');
+          showFeedback('MISSED!', 'miss');
         }
       }
 
-      // 6. Update & Render Pop Particles
+      // Render Shockwaves
+      for (let i = state.shockwaves.length - 1; i >= 0; i--) {
+        const sw = state.shockwaves[i];
+        sw.radius += 3.5;
+        sw.alpha -= 0.04;
+
+        if (sw.alpha <= 0) {
+          state.shockwaves.splice(i, 1);
+          continue;
+        }
+
+        ctx.strokeStyle = sw.color;
+        ctx.globalAlpha = sw.alpha;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+      }
+
+      // Render Particles
       for (let i = state.particles.length - 1; i >= 0; i--) {
         const p = state.particles[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.vy += 0.15; // Particle Gravity
-        p.life -= 0.03;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 0.2 * dt;
+        p.life -= p.decay;
 
         if (p.life <= 0) {
           state.particles.splice(i, 1);
@@ -377,7 +564,7 @@ const BirthdayGame = ({ onFinish }) => {
         ctx.globalAlpha = 1.0;
       }
 
-      // 7. Update & Render Win Confetti
+      // Render Confetti
       for (let i = state.confetti.length - 1; i >= 0; i--) {
         const c = state.confetti[i];
         c.x += c.vx;
@@ -391,20 +578,20 @@ const BirthdayGame = ({ onFinish }) => {
         ctx.fillRect(-c.size / 2, -c.size / 2, c.size, c.size);
         ctx.restore();
 
-        if (c.y > canvas.height + 20) {
+        if (c.y > canvas.height + 40) {
           state.confetti.splice(i, 1);
         }
       }
 
+      ctx.restore();
       animationFrameId = requestAnimationFrame(render);
     };
 
     render();
-
     return () => cancelAnimationFrame(animationFrameId);
   }, [gameOver]);
 
-  // Canvas Touches/Mouse Coords Converter
+  // Touch/Mouse Controls
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -439,20 +626,21 @@ const BirthdayGame = ({ onFinish }) => {
     const dx = state.dragStart.x - state.dragCurrent.x;
     const dy = state.dragStart.y - state.dragCurrent.y;
 
-    if (Math.hypot(dx, dy) > 12) {
+    if (Math.hypot(dx, dy) > 15) {
+      playHDAudio('release');
       const bowX = canvasRef.current.width * 0.15;
       const bowY = canvasRef.current.height * 0.65;
       const pullAngle = Math.atan2(dy, dx);
-      const pullDist = Math.min(Math.hypot(dx, dy), 100);
+      const pullDist = Math.min(Math.hypot(dx, dy), 125);
 
       state.arrowPos = {
-        x: bowX - (pullDist * 0.8) * Math.cos(pullAngle),
-        y: bowY - (pullDist * 0.8) * Math.sin(pullAngle)
+        x: bowX - (pullDist * 0.85) * Math.cos(pullAngle),
+        y: bowY - (pullDist * 0.85) * Math.sin(pullAngle)
       };
 
       state.arrowVel = {
-        vx: dx * 0.35,
-        vy: dy * 0.35
+        vx: dx * 0.38,
+        vy: dy * 0.38
       };
       
       state.isShooting = true;
@@ -469,7 +657,8 @@ const BirthdayGame = ({ onFinish }) => {
         fontFamily: 'system-ui, -apple-system, sans-serif',
         width: '100%',
         userSelect: 'none',
-        touchAction: 'none'
+        touchAction: 'none',
+        position: 'relative'
       }}
     >
       <div
@@ -482,69 +671,109 @@ const BirthdayGame = ({ onFinish }) => {
           marginBottom: '12px'
         }}
       >
-        <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>
-          🎈 Pop Balloon: <span style={{ color: '#f43f5e' }}>{currentNumber}/21</span>
+        <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '800', letterSpacing: '0.5px' }}>
+          🎯 TARGET: <span style={{ color: '#f43f5e' }}>{currentNumber}/21</span>
+          {comboCount > 1 && (
+            <span style={{ marginLeft: '12px', color: '#38bdf8', fontSize: '15px' }}>
+              🔥 {comboCount}x COMBO!
+            </span>
+          )}
         </h3>
 
         <button
           onClick={onFinish}
           style={{
-            background: 'rgba(255, 255, 255, 0.15)',
-            border: '1px solid rgba(255, 255, 255, 0.3)',
+            background: 'rgba(255, 255, 255, 0.12)',
+            border: '1px solid rgba(255, 255, 255, 0.25)',
             color: '#fff',
             padding: '8px 18px',
             borderRadius: '20px',
             fontSize: '13px',
             fontWeight: '600',
-            cursor: 'pointer'
+            cursor: 'pointer',
+            backdropFilter: 'blur(10px)'
           }}
         >
           Skip ✕
         </button>
       </div>
 
-      {gameOver ? (
-        <div
-          style={{
-            background: 'rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(20px)',
-            padding: '40px 24px',
-            borderRadius: '24px',
-            border: '1px solid rgba(255, 255, 255, 0.25)',
-            textAlign: 'center',
-            margin: '20px 0',
-            width: '90%',
-            maxWidth: '450px',
-            boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
-          }}
-        >
-          <h2 style={{ color: '#fbbf24', fontSize: '28px', margin: '0 0 12px 0' }}>
-            🎉 HAPPY 21st BIRTHDAY! 🎉
-          </h2>
-          <p style={{ fontSize: '15px', opacity: 0.9, lineHeight: '1.5' }}>
-            Awesome! Aapne saare 21 balloons pop kar diye hain! Gift Unlock ho gaya hai ✨
-          </p>
-
-          <button
-            onClick={onFinish}
+      <div style={{ position: 'relative', width: '100%', maxWidth: '800px' }}>
+        {/* Dynamic Screen Feedback Overlay */}
+        {feedbackText && (
+          <div
+            key={feedbackText.id}
             style={{
-              marginTop: '20px',
-              padding: '14px 36px',
-              backgroundColor: '#fff',
-              color: '#000',
-              border: 'none',
-              borderRadius: '30px',
-              fontSize: '16px',
-              fontWeight: '800',
-              cursor: 'pointer',
-              boxShadow: '0 10px 25px rgba(251, 191, 36, 0.4)'
+              position: 'absolute',
+              top: '20%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              zIndex: 10,
+              pointerEvents: 'none',
+              fontSize: '38px',
+              fontWeight: '900',
+              letterSpacing: '2px',
+              color: feedbackText.type === 'hit' ? '#10b981' : '#f43f5e',
+              textShadow: feedbackText.type === 'hit' 
+                ? '0 0 25px rgba(16, 185, 129, 0.9), 0 0 50px rgba(16, 185, 129, 0.6)' 
+                : '0 0 25px rgba(244, 63, 94, 0.9), 0 0 50px rgba(244, 63, 94, 0.6)',
+              animation: 'popFade 1.1s forwards ease-out'
             }}
           >
-            🎁 Open My Gift ✨
-          </button>
-        </div>
-      ) : (
-        <>
+            {feedbackText.text}
+          </div>
+        )}
+
+        <style>{`
+          @keyframes popFade {
+            0% { opacity: 0; transform: translate(-50%, -30%) scale(0.5); }
+            18% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+            80% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            100% { opacity: 0; transform: translate(-50%, -65%) scale(0.85); }
+          }
+        `}</style>
+
+        {gameOver ? (
+          <div
+            style={{
+              background: 'rgba(15, 23, 42, 0.92)',
+              backdropFilter: 'blur(25px)',
+              padding: '40px 28px',
+              borderRadius: '28px',
+              border: '1px solid rgba(251, 191, 36, 0.5)',
+              textAlign: 'center',
+              margin: '20px auto',
+              width: '90%',
+              maxWidth: '460px',
+              boxShadow: '0 0 60px rgba(251, 191, 36, 0.35)'
+            }}
+          >
+            <h2 style={{ color: '#fbbf24', fontSize: '32px', margin: '0 0 12px 0', textShadow: '0 0 15px rgba(251,191,36,0.6)' }}>
+              👑 HAPPY 21st BIRTHDAY! 👑
+            </h2>
+            <p style={{ fontSize: '15px', color: '#cbd5e1', lineHeight: '1.6' }}>
+              Supreme Victory! Aapne saare 21 balloons sharp precision ke saath pop kar diye! Gift Unlock ho gaya hai ✨
+            </p>
+
+            <button
+              onClick={onFinish}
+              style={{
+                marginTop: '24px',
+                padding: '16px 42px',
+                background: 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)',
+                color: '#000',
+                border: 'none',
+                borderRadius: '30px',
+                fontSize: '17px',
+                fontWeight: '900',
+                cursor: 'pointer',
+                boxShadow: '0 10px 30px rgba(245, 158, 11, 0.5)'
+              }}
+            >
+              🎁 OPEN YOUR GIFT ✨
+            </button>
+          </div>
+        ) : (
           <canvas
             ref={canvasRef}
             width={800}
@@ -560,25 +789,27 @@ const BirthdayGame = ({ onFinish }) => {
               maxWidth: '800px',
               height: 'auto',
               maxHeight: '65vh',
-              borderRadius: '20px',
-              border: '2px solid rgba(255, 255, 255, 0.2)',
-              boxShadow: '0 15px 35px rgba(0,0,0,0.5)',
+              borderRadius: '24px',
+              border: '2px solid rgba(255, 255, 255, 0.15)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.85)',
               touchAction: 'none',
               cursor: 'crosshair'
             }}
           />
+        )}
+      </div>
 
-          <p
-            style={{
-              fontSize: '13px',
-              color: 'rgba(255, 255, 255, 0.75)',
-              marginTop: '12px',
-              textAlign: 'center'
-            }}
-          >
-            🎯 <strong>Bow ko peeche kheencho (Pull back) aur chhod do!</strong>
-          </p>
-        </>
+      {!gameOver && (
+        <p
+          style={{
+            fontSize: '13px',
+            color: 'rgba(255, 255, 255, 0.7)',
+            marginTop: '14px',
+            textAlign: 'center'
+          }}
+        >
+          🏹 <strong>Teer peeche kheencho, mechanical tension feel karo aur target destroy karo!</strong>
+        </p>
       )}
     </div>
   );

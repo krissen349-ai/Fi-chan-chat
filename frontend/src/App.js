@@ -3,10 +3,11 @@ import io from 'socket.io-client';
 import './App.css';
 import appLogo from './fi chat.jpg'; 
 import Gifts from './Gifts'; 
-import { getToken, isSupported } from "firebase/messaging";
+import GameModal from './GameModal';
+import { deleteToken, getToken, onMessage } from "firebase/messaging";
 import { set, get, del } from 'idb-keyval';
 
-import { messaging } from "./firebase";
+import { messagingPromise } from "./firebase";
 import { auth, db } from './firebase';
 import { 
   createUserWithEmailAndPassword, 
@@ -69,24 +70,6 @@ const compressImage = (base64Str, maxWidth = 150, maxHeight = 150, quality = 0.7
   });
 };
 
-async function requestNotificationPermission() {
-  try {
-    const supported = await isSupported().catch(() => false);
-    if (!supported || !messaging) return;
-
-    const permission = await Notification.requestPermission();
-    if (permission === 'granted') {
-      const currentToken = await getToken(messaging, { 
-        vapidKey: 'BDlIEtQFhIRnkhFEQrkyPrZ9lyJT0tSu9PQuSYZhpKU1mff-lYLiYa2clRidpSqU51aqNjK88omNP3z7uW07fXs' 
-      }).catch(err => console.log("FCM Token fetch error:", err));
-
-      if (currentToken) console.log('FCM Token:', currentToken);
-    }
-  } catch (error) {
-    console.log('Notification permission error:', error);
-  }
-}
-
 function App() {
   const [showWelcomeSplash, setShowWelcomeSplash] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -96,6 +79,8 @@ function App() {
   const [showPassword, setShowPassword] = useState(false);
   
   const [pushNotificationAlert, setPushNotificationAlert] = useState(null);
+  const [notificationStatus, setNotificationStatus] = useState('');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('chat_active_tab') || 'rooms'); 
   const [theme, setTheme] = useState(() => localStorage.getItem('chat_theme') || 'dark');
   const [avatarSeed, setAvatarSeed] = useState('Amaya'); 
@@ -144,12 +129,19 @@ function App() {
   const [scrollDirectionUp, setScrollDirectionUp] = useState(true);
 
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  
-  const [isRecording, setIsRecording] = useState(false);
+
+// Line 149-152 ko aisa kar dein:
+  const [gameInvite, setGameInvite] = useState(null); // Pending challenge
+  const [gameSession, setGameSession] = useState(null); // Active Game State
+  const [isRecording, setIsRecording] = useState(false); // 👈 Uncomment Karein
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [showMicErrorModal, setShowMicErrorModal] = useState(false); 
   const timerRef = useRef(null);
+  const pushTokenRef = useRef(null);
+  const socketUserReadyRef = useRef(false);
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
 
   const messagesEndRef = useRef(null);
   const chatContainerRef = useRef(null);
@@ -165,6 +157,102 @@ function App() {
   ];
 
   const getMyId = useCallback(() => auth.currentUser?.uid || currentUser?.uid || socket.id, [currentUser]);
+
+  const registerPushToken = useCallback((token) => {
+    socket.timeout(5000).emit('register_push_token', { token }, (error, result) => {
+      if (error || !result?.ok) {
+        setNotificationStatus(result?.error || 'Could not register this device with the notification server.');
+      } else if (!result.pushEnabled) {
+        setNotificationStatus('Permission is enabled, but server push credentials still need setup.');
+      } else {
+        setNotificationStatus('Notifications are enabled on this device.');
+      }
+    });
+  }, []);
+
+  const enableNotifications = useCallback(async (userInitiated = true) => {
+    try {
+      const disabledKey = `chat_notifications_disabled_${auth.currentUser?.uid || ''}`;
+      if (userInitiated) {
+        try { localStorage.removeItem(disabledKey); } catch (storageError) {
+          console.warn('Could not update notification preference:', storageError);
+        }
+      }
+      if (typeof Notification === 'undefined' || !('serviceWorker' in navigator)) {
+        setNotificationStatus('Browser notifications are not supported here.');
+        return;
+      }
+
+      const permission = userInitiated && Notification.permission === 'default'
+        ? await Notification.requestPermission()
+        : Notification.permission;
+      if (permission !== 'granted') {
+        setNotificationsEnabled(false);
+        setNotificationStatus('Notifications are blocked in browser settings.');
+        return;
+      }
+
+      const messaging = await messagingPromise;
+      if (!messaging) {
+        setNotificationStatus('Push notifications are not supported by this browser.');
+        return;
+      }
+
+      const serviceWorkerRegistration = await navigator.serviceWorker.register(
+        `${process.env.PUBLIC_URL || ''}/firebase-messaging-sw.js`
+      );
+      const token = await getToken(messaging, {
+        vapidKey: 'BDlIEtQFhIRnkhFEQrkyPrZ9lyJT0tSu9PQuSYZhpKU1mff-lYLiYa2clRidpSqU51aqNjK88omNP3z7uW07fXs',
+        serviceWorkerRegistration
+      });
+      if (!token) throw new Error('Firebase did not provide a push token.');
+
+      pushTokenRef.current = token;
+      setNotificationsEnabled(true);
+      if (!socket.connected) socket.connect();
+      if (socketUserReadyRef.current) registerPushToken(token);
+      else setNotificationStatus('Connecting to the notification server...');
+    } catch (error) {
+      console.error('Notification setup failed:', error);
+      setNotificationStatus(error.message || 'Could not enable notifications.');
+    }
+  }, [registerPushToken]);
+
+  const disableNotifications = async () => {
+    try {
+      localStorage.setItem(`chat_notifications_disabled_${auth.currentUser?.uid || ''}`, 'true');
+    } catch (error) {
+      console.warn('Could not save notification preference:', error);
+    }
+    const token = pushTokenRef.current;
+    if (token) {
+      await new Promise(resolve => {
+        socket.timeout(1500).emit('unregister_push_token', { token }, () => resolve());
+      });
+    }
+
+    try {
+      const messaging = await messagingPromise;
+      if (messaging) await deleteToken(messaging);
+      pushTokenRef.current = null;
+      setNotificationsEnabled(false);
+      setNotificationStatus('Notifications are disabled on this device.');
+    } catch (error) {
+      console.error('Could not disable notifications:', error);
+      setNotificationStatus('Could not disable notifications.');
+    }
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    const disabledKey = `chat_notifications_disabled_${auth.currentUser?.uid || ''}`;
+    try {
+      if (localStorage.getItem(disabledKey) === 'true') return;
+    } catch (error) {
+      console.warn('Could not read notification preference:', error);
+    }
+    enableNotifications(false);
+  }, [isLoggedIn, enableNotifications]);
 
   const setActiveChat = useCallback((chatObj) => {
     setActiveChatState(chatObj);
@@ -199,8 +287,6 @@ function App() {
           
           setCurrentUser(finalUser);
           setIsLoggedIn(true);
-          socket.emit('login_user', finalUser);
-
           setDoc(doc(db, "users", user.uid), {
             uid: user.uid,
             username: finalUser.username,
@@ -208,8 +294,6 @@ function App() {
             pfp: finalUser.pfp,
             lastSeen: Date.now()
           }, { merge: true }).catch(e => console.error("Firestore sync error:", e));
-
-          requestNotificationPermission();
 
           setShowWelcomeSplash(true);
           splashTimer = setTimeout(() => {
@@ -239,6 +323,59 @@ function App() {
       if (splashTimer) clearTimeout(splashTimer);
     };
   }, [username]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const loginSocketUser = () => {
+      const firebaseUser = auth.currentUser;
+      if (!currentUserRef.current || !firebaseUser) return;
+      socketUserReadyRef.current = false;
+      firebaseUser.getIdToken().then(idToken => {
+        socket.timeout(5000).emit('login_user', { ...currentUserRef.current, idToken }, (error, result) => {
+          if (error || !result?.ok) return;
+          socketUserReadyRef.current = true;
+          if (pushTokenRef.current) registerPushToken(pushTokenRef.current);
+        });
+      }).catch(error => console.error('Socket authentication failed:', error));
+    };
+    const handleSocketDisconnect = () => { socketUserReadyRef.current = false; };
+
+    socket.on('connect', loginSocketUser);
+    socket.on('disconnect', handleSocketDisconnect);
+    if (socket.connected) loginSocketUser();
+    return () => {
+      socket.off('connect', loginSocketUser);
+      socket.off('disconnect', handleSocketDisconnect);
+    };
+  }, [isLoggedIn, registerPushToken]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let cancelled = false;
+    let unsubscribe;
+
+    messagingPromise.then((messaging) => {
+      if (!messaging || cancelled) return;
+      unsubscribe = onMessage(messaging, (payload) => {
+        if (document.visibilityState === 'visible' || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+        const data = payload.data || {};
+        navigator.serviceWorker.ready.then((registration) => registration.showNotification(
+          data.title || 'New message',
+          {
+            body: data.body || 'You received a new message.',
+            icon: data.icon || '/fi-chan-logo.jpg',
+            data: { url: data.url || '/', chatId: data.chatId || '' }
+          }
+        ));
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [isLoggedIn]);
 
   useEffect(() => {
     if (theme === 'light') {
@@ -286,6 +423,14 @@ function App() {
     const handleGroupsUpdate = (data) => setGroupsList(data);
 
     const handleReceiveMessage = (data) => {
+      if (data.message.senderId !== auth.currentUser?.uid &&
+          (document.visibilityState !== 'visible' || activeChat?.id !== data.chatId)) {
+        const preview = data.message.text || (data.message.fileType ? `Sent ${data.message.fileType}` : 'Sent an attachment');
+        setPushNotificationAlert({
+          title: data.message.senderName || 'New message',
+          message: preview
+        });
+      }
       setMessages(prev => {
         const currentChatMessages = prev[data.chatId] || [];
         const isDuplicate = currentChatMessages.some(msg => msg.id === data.message.id);
@@ -302,58 +447,90 @@ function App() {
       setMessages(prev => ({ ...prev, [data.chatId]: data.messages }));
     };
 
-    const handleUserTyping = (data) => {
-      setTypingStatus(prev => ({
-        ...prev,
-        [data.chatId]: { isTyping: data.isTyping, user: data.username }
-      }));
-    };
+   // --- Handlers ---
+  const handleUserTyping = (data) => {
+    setTypingStatus((prev) => ({
+      ...prev,
+      [data.chatId]: { isTyping: data.isTyping, user: data.username },
+    }));
+  };
 
-    const handleUserSeenUpdate = ({ chatId, messageId, userId }) => {
-      setMessages(prev => {
-        const updated = { ...prev };
-        const chatMsgs = updated[chatId] ? [...updated[chatId]] : [];
-        const msgIndex = chatMsgs.findIndex(m => m.id === messageId);
-        if (msgIndex !== -1 && !chatMsgs[msgIndex].seenBy.includes(userId)) {
-          chatMsgs[msgIndex] = { ...chatMsgs[msgIndex], seenBy: [...chatMsgs[msgIndex].seenBy, userId] };
-        }
-        updated[chatId] = chatMsgs;
-        return updated;
-      });
-    };
+  const handleUserSeenUpdate = ({ chatId, messageId, userId }) => {
+    setMessages((prev) => {
+      const updated = { ...prev };
+      const chatMsgs = updated[chatId] ? [...updated[chatId]] : [];
+      const msgIndex = chatMsgs.findIndex((m) => m.id === messageId);
+      if (msgIndex !== -1 && !chatMsgs[msgIndex].seenBy.includes(userId)) {
+        chatMsgs[msgIndex] = {
+          ...chatMsgs[msgIndex],
+          seenBy: [...chatMsgs[msgIndex].seenBy, userId],
+        };
+      }
+      updated[chatId] = chatMsgs;
+      return updated;
+    });
+  };
 
-    const handleMessageDeleted = ({ chatId, messageId }) => {
-      setMessages(prev => {
-        const chatMsgs = prev[chatId] ? prev[chatId].filter(m => m.id !== messageId) : [];
-        return { ...prev, [activeChat?.id || chatId]: chatMsgs };
-      });
-    };
+  const handleMessageDeleted = ({ chatId, messageId }) => {
+    setMessages((prev) => {
+      const chatMsgs = prev[chatId]
+        ? prev[chatId].filter((m) => m.id !== messageId)
+        : [];
+      return { ...prev, [activeChat?.id || chatId]: chatMsgs };
+    });
+  };
 
-    const handlePushNotification = (notif) => {
-      setPushNotificationAlert(notif);
-      setTimeout(() => setPushNotificationAlert(null), 4000);
-    };
+  const handlePushNotification = (notif) => {
+    setPushNotificationAlert(notif);
+    setTimeout(() => setPushNotificationAlert(null), 4000);
+  };
 
-    socket.on('update_users', handleUsersUpdate);
-    socket.on('update_groups', handleGroupsUpdate);
-    socket.on('receive_message', handleReceiveMessage);
-    socket.on('messages_updated', handleMessagesUpdated);
-    socket.on('user_typing', handleUserTyping);
-    socket.on('userSeenUpdate', handleUserSeenUpdate);
-    socket.on('message_deleted', handleMessageDeleted);
-    socket.on('push_notification', handlePushNotification);
+  // 🎮 Game Handlers
+  const handleReceiveGameInvite = (data) => {
+    setGameInvite(data);
+  };
 
-    return () => {
-      socket.off('update_users', handleUsersUpdate);
-      socket.off('update_groups', handleGroupsUpdate);
-      socket.off('receive_message', handleReceiveMessage);
-      socket.off('messages_updated', handleMessagesUpdated);
-      socket.off('user_typing', handleUserTyping);
-      socket.off('userSeenUpdate', handleUserSeenUpdate);
-      socket.off('message_deleted', handleMessageDeleted);
-      socket.off('push_notification', handlePushNotification);
-    };
-  }, [activeChat]);
+  const handleGameStarted = (data) => {
+    setGameInvite(null); // Invitation popup close
+    setGameSession(data); // Launch Game Modal
+  };
+
+  const handleGameInviteRejected = () => {
+    alert("Opponent rejected the game invite! ❌");
+  };
+
+  // --- 1. ATTACH ALL SOCKET LISTENERS (ONCE) ---
+  socket.on("update_users", handleUsersUpdate);
+  socket.on("update_groups", handleGroupsUpdate);
+  socket.on("receive_message", handleReceiveMessage);
+  socket.on("messages_updated", handleMessagesUpdated);
+  socket.on("user_typing", handleUserTyping);
+  socket.on("userSeenUpdate", handleUserSeenUpdate);
+  socket.on("message_deleted", handleMessageDeleted);
+  socket.on("push_notification", handlePushNotification);
+
+  // Game Socket Listeners
+  socket.on("receive_game_invite", handleReceiveGameInvite);
+  socket.on("game_started", handleGameStarted);
+  socket.on("game_invite_rejected", handleGameInviteRejected);
+
+  // --- 2. SINGLE CLEANUP RETURN FUNCTION ---
+  return () => {
+    socket.off("update_users", handleUsersUpdate);
+    socket.off("update_groups", handleGroupsUpdate);
+    socket.off("receive_message", handleReceiveMessage);
+    socket.off("messages_updated", handleMessagesUpdated);
+    socket.off("user_typing", handleUserTyping);
+    socket.off("userSeenUpdate", handleUserSeenUpdate);
+    socket.off("message_deleted", handleMessageDeleted);
+    socket.off("push_notification", handlePushNotification);
+
+    // Game Listeners Cleanup
+    socket.off("receive_game_invite", handleReceiveGameInvite);
+    socket.off("game_started", handleGameStarted);
+    socket.off("game_invite_rejected", handleGameInviteRejected);
+  };
+}, [activeChat]);
 
   useEffect(() => {
     if (!activeChat || !auth.currentUser) return;
@@ -511,13 +688,53 @@ function App() {
     }
   };
 
-  const selectChat = (chatObj) => {
+  const selectChat = useCallback((chatObj) => {
     setActiveChat(chatObj);
     socket.emit('join_chat', chatObj.id);
     setReplyToMsg(null);
     setEditMsg(null);
     set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
-  };
+  }, [setActiveChat]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !('serviceWorker' in navigator)) return;
+
+    const openChat = (chatId) => {
+      if (!chatId) return;
+      const participantIds = chatId.split('--');
+      if (participantIds.length === 2) {
+        const peerUid = participantIds.find(uid => uid !== auth.currentUser?.uid);
+        const peer = allRegisteredUsers.find(user => user.uid === peerUid) ||
+          usersList.find(user => user.uid === peerUid);
+        selectChat({
+          id: chatId,
+          name: peer?.username || 'Direct chat',
+          type: 'private',
+          userObj: peer || { uid: peerUid }
+        });
+        return;
+      }
+
+      const group = groupsList.find(item => item.id === chatId);
+      if (group) selectChat({ id: group.id, name: group.name, type: 'group' });
+    };
+
+    const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type === 'OPEN_CHAT') openChat(event.data.chatId);
+    };
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+
+    const params = new URLSearchParams(window.location.search);
+    const chatId = params.get('chatId');
+    if (chatId) {
+      openChat(chatId);
+      params.delete('chatId');
+      const query = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    }
+
+    return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+  }, [isLoggedIn, allRegisteredUsers, usersList, groupsList, selectChat]);
 
   const handleReaction = (messageId, emoji) => {
     if (!activeChat) return;
@@ -684,6 +901,38 @@ function App() {
   e.target.value = "";
 };
 
+// 🎮 Game Invite Send Handler
+  const handleStartGameClick = () => {
+    if (!activeChat) return;
+
+    // Direct User ko target karne ke liye UID ya ActiveChat ID ka use
+    const targetUserId = activeChat.userObj?.id || activeChat.id;
+
+    socket.emit('send_game_invite', {
+      toUserId: targetUserId,
+      senderName: currentUser?.username || 'Friend',
+      chatId: activeChat.id
+    });
+
+    alert("Game Invite sent to opponent! 🎮");
+  };
+
+  // 🎮 Accept Invite
+  const handleAcceptInvite = () => {
+    if (!gameInvite) return;
+    socket.emit('accept_game_invite', {
+      chatId: gameInvite.chatId,
+      fromUserId: gameInvite.fromUserId
+    });
+  };
+
+  // 🎮 Decline Invite
+  const handleRejectInvite = () => {
+    if (!gameInvite) return;
+    socket.emit('reject_game_invite', { fromUserId: gameInvite.fromUserId });
+    setGameInvite(null);
+  };
+
   const handleTypingInput = (e) => {
     setTypedMessage(e.target.value);
     const isTyping = e.target.value.length > 0;
@@ -751,9 +1000,18 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     try { localStorage.removeItem('chat_active_chat'); } catch(e){}
-    signOut(auth).then(() => window.location.reload());
+    if (pushTokenRef.current) {
+      await new Promise(resolve => {
+        socket.timeout(1500).emit('unregister_push_token', { token: pushTokenRef.current }, () => resolve());
+      });
+      const messaging = await messagingPromise;
+      if (messaging) await deleteToken(messaging).catch(() => {});
+      pushTokenRef.current = null;
+    }
+    await signOut(auth);
+    window.location.reload();
   };
 
   const toggleScroll = () => {
@@ -820,8 +1078,6 @@ function App() {
 
         setCurrentUser(finalUser);
         setIsLoggedIn(true);
-        socket.emit('login_user', finalUser);
-
       } catch (error) {
         alert(`Signup Fail: ${error.message}`);
       }
@@ -1041,12 +1297,22 @@ function App() {
         <div className="sidebar-header">
           <div className="sidebar-header-top">
             <h2>Fi-chan Chat</h2>
-            <button className="theme-toggle-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️ Light' : '🌙 Dark'}</button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="theme-toggle-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️ Light' : '🌙 Dark'}</button>
+              <button
+                className="theme-toggle-btn"
+                onClick={notificationsEnabled ? disableNotifications : () => enableNotifications(true)}
+                title={notificationsEnabled ? 'Disable browser notifications' : 'Enable browser notifications'}
+              >
+                {notificationsEnabled ? '🔔 On' : '🔕 Enable'}
+              </button>
+            </div>
           </div>
           <div className="user-badge">
             <img src={currentUser?.pfp} alt="me" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
             <span>@{currentUser?.username}</span>
           </div>
+          {notificationStatus && <p role="status" style={{ margin: '8px 0 0', fontSize: '12px' }}>{notificationStatus}</p>}
         </div>
 
         <div className="tab-menu">
@@ -1380,27 +1646,56 @@ function App() {
                 </div>
               ) : (
                 <form className="chat-input-bar" onSubmit={sendMessage}>
-                  <span className="emoji-stub" onClick={() => setShowEmojiPicker(!showEmojiPicker)}>😊</span>
+                  {/* Emoji Button */}
+                  <span 
+                    className="chat-action-btn" 
+                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  >
+                    😊
+                  </span>
                   
-                  <label htmlFor="image-input" className="file-upload-btn">📁</label>
-                  <input type="file" accept="image/*,video/*,audio/*" onChange={handleFileUpload} style={{ display: 'none' }} id="image-input" />
-                  
+                  {/* File Button */}
+                  <label htmlFor="image-input" className="chat-action-btn">📁</label>
+                  <input 
+                    type="file" 
+                    accept="image/*,video/*,audio/*" 
+                    onChange={handleFileUpload} 
+                    style={{ display: 'none' }} 
+                    id="image-input" 
+                  />
+
+                  {/* Game Button Updated */}
+                    <button 
+                      type="button" 
+                      className="chat-action-btn" 
+                      onClick={handleStartGameClick} 
+                      title="Play Game"
+                    >
+                      🎮
+                    </button>
+
+                  {/* Voice Mic Button */}
                   <button 
                     type="button" 
-                    className="voice-record-btn" 
+                    className="chat-action-btn" 
                     onClick={startRecording}
                     title="Record Voice Message"
                   >
                     🎙️
                   </button>
 
+                  {/* Message Input */}
                   <input 
                     type="text" 
                     placeholder={editMsg ? "Edit message..." : "Write message..."} 
                     value={typedMessage} 
                     onChange={handleTypingInput} 
                   />
-                  <button type="submit" className="send-rocket-btn">{editMsg ? "✅" : "🚀"}</button>
+                  
+                  {/* Send Button */}
+                  <button type="submit" className="send-rocket-btn">
+                    {editMsg ? "✅" : "🚀"}
+                  </button>
                 </form>
               )}
             </div>
@@ -1471,6 +1766,36 @@ function App() {
           </div>
         </div>
       )}
+{/* 📩 GAME INVITE POPUP NOTIFICATION */}
+{gameInvite && (
+  <div className="modal-overlay">
+    <div className="custom-popup-card animate-pop-in" style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: '40px', marginBottom: '10px' }}>🎮</div>
+      <h3>Game Challenge!</h3>
+      <p className="modal-bio">
+        <strong>@{gameInvite.senderName}</strong> wants to play Tic-Tac-Toe with you!
+      </p>
+      <div className="modal-actions-row">
+        <button className="popup-msg-btn" onClick={handleAcceptInvite}>
+          Accept ⚔️
+        </button>
+        <button className="popup-close-btn" onClick={handleRejectInvite}>
+          Decline ✖
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* 🎮 ACTIVE MULTIPLAYER GAME MODAL */}
+{gameSession && (
+  <GameModal
+    socket={socket}
+    gameSession={gameSession}
+    currentUser={currentUser}
+    onClose={() => setGameSession(null)}
+  />
+)}
 
       {showAvatarModal && (
         <div className="avatar-modal-overlay glass-overlay" onClick={() => setShowAvatarModal(false)}>
