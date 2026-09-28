@@ -1,14 +1,15 @@
-// 🚀 SERVER-SIDE (app.js) - UPDATED CODE
-// ==========================================
+// 🚀 SERVER-SIDE (server.js)
+require('dotenv').config();
 const dns = require('dns');
-dns.setServers(['8.8.8.8', '8.8.4.4']); // Google DNS forced for SRV resolution
+dns.setServers(['8.8.8.8', '8.8.4.4']); 
 
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const nodemailer = require('nodemailer'); // 👈 Added nodemailer for sending emails
+const nodemailer = require('nodemailer'); 
+const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
@@ -20,7 +21,7 @@ const io = new Server(server, {
 });
 
 // 🍃 MongoDB Connection Setup
-const MONGO_URI = "mongodb+srv://krissen349_db_user:KrisApp12345@cluster0.csj7rim.mongodb.net/giftsDB?retryWrites=true&w=majority";
+const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI, {
     serverSelectionTimeoutMS: 30000,
@@ -29,25 +30,39 @@ mongoose.connect(MONGO_URI, {
   .then(() => console.log("✅ MongoDB Connected Successfully! 🍃"))
   .catch((err) => console.log("❌ DB Connection Error:", err.message));
 
-// Prevent crashes on unhandled errors
+let firebaseAdminReady = false;
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    try {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        serviceAccount.private_key = serviceAccount.private_key?.replace(/\\n/g, '\n');
+        admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+        firebaseAdminReady = true;
+        console.log('Firebase Admin push notifications enabled.');
+    } catch (error) {
+        console.error('Firebase Admin initialization failed:', error.message);
+    }
+} else {
+    console.warn('Firebase Admin push disabled: FIREBASE_SERVICE_ACCOUNT_JSON is not configured.');
+}
+
 process.on('unhandledRejection', (reason) => {
     console.log('⚠️ Unhandled Rejection:', reason.message || reason);
 });
 
-// 📧 Nodemailer Transporter Configuration (Using standard Gmail SMTP or fallback service)
+// 📧 Nodemailer Configuration
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-        user: 'fichanchat@gmail.com', // Replace with active notification email if needed
-        pass: 'your_email_app_password' // Secure app password
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
     }
 });
 
-// 🎁 Mongoose Schema & Model (Removed unlockDate and unlockTime as requested)
+// 🎁 Mongoose Schema
 const giftSchema = new mongoose.Schema({
   senderName: { type: String, required: true },
   receiverName: { type: String, required: true },
-  recipientEmail: { type: String, default: "" }, // 👈 Added recipient email field
+  recipientEmail: { type: String, default: "" }, 
   giftUrl: { type: String, required: true },
   password: { type: String, default: "" }, 
   enableBalloonGame: { type: Boolean, default: true },
@@ -57,6 +72,48 @@ const giftSchema = new mongoose.Schema({
 });
 
 const Gift = mongoose.model('Gift', giftSchema);
+
+const pushTokenSchema = new mongoose.Schema({
+    uid: { type: String, required: true, index: true },
+    token: { type: String, required: true, unique: true },
+    updatedAt: { type: Date, default: Date.now }
+});
+const PushToken = mongoose.model('PushToken', pushTokenSchema);
+
+async function sendPushToUsers(uids, title, body, chatId) {
+    if (!firebaseAdminReady || !uids.length) return;
+
+    try {
+        const records = await PushToken.find({ uid: { $in: uids } }).lean();
+        if (!records.length) return;
+
+        const response = await admin.messaging().sendEachForMulticast({
+            tokens: records.map(record => record.token),
+            data: {
+                title: String(title).slice(0, 100),
+                body: String(body).slice(0, 240),
+                icon: '/fi-chan-logo.jpg',
+                url: '/',
+                chatId: String(chatId)
+            },
+            webpush: { headers: { Urgency: 'high' } }
+        });
+
+        const invalidTokens = response.responses
+            .map((result, index) => ({ result, token: records[index].token }))
+            .filter(({ result }) => !result.success && [
+                'messaging/registration-token-not-registered',
+                'messaging/invalid-registration-token'
+            ].includes(result.error?.code))
+            .map(({ token }) => token);
+
+        if (invalidTokens.length) {
+            await PushToken.deleteMany({ token: { $in: invalidTokens } });
+        }
+    } catch (error) {
+        console.error('Push delivery failed:', error.message);
+    }
+}
 
 // In-Memory Storage
 let users = {}; 
@@ -73,23 +130,21 @@ io.on('connection', (socket) => {
         .catch(err => console.error("Error fetching initial gifts:", err.message));
 
     // User Login
-    socket.on('login_user', async (userData) => {
-        users[socket.id] = { ...userData, id: socket.id, online: true };
-        
-        if (userData.uid) {
-            socket.join(userData.uid);
+    socket.on('login_user', async (userData = {}, acknowledge) => {
+        const { idToken, ...publicUserData } = userData;
+        let verifiedUid = null;
+        if (firebaseAdminReady && idToken) {
+            try {
+                verifiedUid = (await admin.auth().verifyIdToken(idToken)).uid;
+            } catch (error) {
+                console.warn('Firebase socket authentication failed:', error.message);
+            }
         }
 
         io.emit('update_users', Object.values(users));
         io.emit('update_groups', groups);
+        acknowledge?.({ ok: true, verified: Boolean(verifiedUid) });
         
-        // 🔔 Notification: When user comes online, broadcast notification directly to clients/mobile apps
-        io.emit('push_notification', {
-            type: 'USER_ONLINE',
-            title: 'User Online ✨',
-            message: `@${userData.username || 'Someone'} is now online!`
-        });
-
         try {
             const gifts = await Gift.find();
             io.emit('update_gifts', gifts);
@@ -98,12 +153,10 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 🎁 Add Gift Handler with Email Notification & Mobile Push Alert
-    socket.on('add_gift', async (giftData) => {
-        console.log("👉 Step 1: add_gift socket event trigger hua:", giftData);
-        
-        if (!giftData || !giftData.senderName || !giftData.receiverName || !giftData.giftUrl) {
-            console.log("❌ Missing fields in giftData!");
+    socket.on('register_push_token', async ({ token } = {}, acknowledge) => {
+        const uid = users[socket.id]?.verifiedUid;
+        if (!uid || typeof token !== 'string' || token.length < 20 || token.length > 4096) {
+            acknowledge?.({ ok: false, error: 'Sign in again or configure Firebase Admin to register this device.' });
             return;
         }
 
