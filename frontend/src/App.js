@@ -36,38 +36,34 @@ const socket = io('https://fi-chan-chat.onrender.com', {
   autoConnect: true
 });
 
-// Helper Function: Base64/File Image ko fast load & small storage size ke liye compress karna
-const compressImage = (base64Str, maxWidth = 150, maxHeight = 150, quality = 0.7) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.src = base64Str;
-    img.onload = () => {
-      let width = img.width;
-      let height = img.height;
+const uploadToCloudinary = async (file) => {
+  const cloudName = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME?.trim();
+  const uploadPreset = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET?.trim();
+  if (!cloudName || !uploadPreset) {
+    throw new Error('Uploads are not configured. Set the Cloudinary cloud name and unsigned upload preset.');
+  }
 
-      if (width > height) {
-        if (width > maxWidth) {
-          height *= maxWidth / width;
-          width = maxWidth;
-        }
-      } else {
-        if (height > maxHeight) {
-          width *= maxHeight / height;
-          height = maxHeight;
-        }
-      }
+  const resourceType = /^(image|video|audio)\//.test(file.type) ? 'auto' : 'raw';
+  const formData = new FormData();
+  formData.append('file', file, file.name || 'upload');
+  formData.append('upload_preset', uploadPreset);
 
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, width, height);
-
-      const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
-      resolve(compressedDataUrl);
-    };
-    img.onerror = () => resolve(base64Str);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`, {
+    method: 'POST',
+    body: formData
   });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.secure_url) {
+    throw new Error(result.error?.message || `Upload failed (HTTP ${response.status}). Check the Cloudinary cloud name and unsigned preset.`);
+  }
+  return result.secure_url;
+};
+
+const ensureHostedImage = async (image) => {
+  if (!image?.startsWith('data:image')) return image;
+  const blob = await (await fetch(image)).blob();
+  const extension = blob.type.split('/')[1] || 'jpg';
+  return uploadToCloudinary(new File([blob], `profile.${extension}`, { type: blob.type || 'image/jpeg' }));
 };
 
 function App() {
@@ -815,91 +811,91 @@ function App() {
   };
 
   const handleFileUpload = async (e) => {
-  const file = e.target.files[0];
-  if (!file || !activeChat) return;
+    const files = Array.from(e.target.files || []);
+    const chat = activeChat;
+    e.target.value = '';
+    if (!files.length || !chat) return;
 
-  if (file.size > 15 * 1024 * 1024) return alert("File 15MB se kam ki honi chahiye!");
-
-  // File type classification
-  let fileType = 'image';
-  if (file.type.startsWith('video/')) fileType = 'video';
-  if (file.type.startsWith('audio/')) fileType = 'audio';
-
-  const currentUserId = getMyId();
-  const now = new Date();
-  const msgId = `msg-${Date.now()}`;
-
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("upload_preset", "fi_chan_chat");
-
-  try {
-    // Cloudinary Universal Auto Endpoint
-    const res = await fetch("https://api.cloudinary.com/v1_1/c-86564d8be2f45cd32567657acca041/auto/upload", {
-      method: "POST",
-      body: formData
-    });
-
-    const data = await res.json();
-
-    // Debugging output in browser console if fails
-    if (!data.secure_url) {
-      console.error("Cloudinary Error Detail:", data);
-      alert(`Upload Error: ${data.error?.message || "File upload nahi ho saki"}`);
+    const oversizedFile = files.find(file => file.size > 15 * 1024 * 1024);
+    if (oversizedFile) {
+      alert(`${oversizedFile.name} is over the 15 MB file limit.`);
       return;
     }
 
-    const uploadedUrl = data.secure_url;
+    const currentUserId = getMyId();
+    const reply = replyToMsg;
+    const isGlobal = chat.id === 'global-group' || chat.id === 'global' || chat.name === 'Global Group';
+    for (const file of files) {
+      try {
+        const uploadedUrl = await uploadToCloudinary(file);
+        const fileType = file.type.startsWith('image/') ? 'image'
+          : file.type.startsWith('video/') ? 'video'
+            : file.type.startsWith('audio/') ? 'audio' : 'file';
+        const now = new Date();
+        const msgObject = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          senderId: currentUserId,
+          senderName: currentUser?.username || 'User',
+          text: '',
+          fileUrl: uploadedUrl,
+          fileType,
+          fileName: file.webkitRelativePath || file.name,
+          fileSize: file.size,
+          timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+          timestampRaw: now.getTime(),
+          seenBy: [currentUserId],
+          replyTo: reply ? { id: reply.id, senderName: reply.senderName, text: reply.text || 'Attachment' } : null,
+          reactions: {}
+        };
 
-    const msgObject = {
-      id: msgId,
-      senderId: currentUserId,
-      senderName: currentUser?.username || "User",
-      text: "",
-      fileUrl: uploadedUrl,
-      fileType: fileType,
-      timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
-      timestampRaw: now.getTime(),
-      seenBy: [currentUserId],
-      replyTo: replyToMsg ? { id: replyToMsg.id, senderName: replyToMsg.senderName, text: replyToMsg.text || "📷 Attachment" } : null,
-      reactions: {}
-    };
+        setMessages(prev => ({ ...prev, [chat.id]: [...(prev[chat.id] || []), msgObject] }));
+        socket.emit('send_message', {
+          chatId: chat.id,
+          senderId: currentUserId,
+          senderName: currentUser?.username || 'User',
+          pfp: currentUser?.pfp || null,
+          text: '',
+          fileUrl: uploadedUrl,
+          fileType,
+          fileName: file.webkitRelativePath || file.name,
+          fileSize: file.size,
+          id: msgObject.id,
+          replyTo: msgObject.replyTo
+        });
 
-    setMessages(prev => ({
-      ...prev,
-      [activeChat.id]: [...(prev[activeChat.id] || []), msgObject]
-    }));
-
-    socket.emit('send_message', {
-      chatId: activeChat.id,
-      senderId: currentUserId,
-      senderName: currentUser?.username || "User",
-      pfp: currentUser?.pfp || null,
-      text: "",
-      fileUrl: uploadedUrl,
-      fileType: fileType,
-      timeFormatted: msgObject.timeFormatted,
-      dateFormatted: msgObject.dateFormatted,
-      id: msgId,
-      replyTo: msgObject.replyTo
-    });
-
+        if (!isGlobal && chat.type === 'private') {
+          await addDoc(collection(db, 'private_chats', chat.id, 'messages'), msgObject);
+        }
+      } catch (error) {
+        console.error(`Upload failed for ${file.name}:`, error);
+        alert(`Could not upload ${file.name}: ${error.message}`);
+        break;
+      }
+    }
     setReplyToMsg(null);
+  };
 
-    const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
-    if (!isGlobal && activeChat.type === 'private') {
-      addDoc(collection(db, "private_chats", activeChat.id, "messages"), msgObject)
-        .catch(error => console.error("Firestore Upload Error:", error));
+  const handleProfilePhotoUpload = async (event, setPhoto) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Please choose an image file.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Profile photos must be smaller than 10 MB.');
+      return;
     }
 
-  } catch (error) {
-    console.error("Upload Catch Error:", error);
-    alert("Media upload karne mein dikkat aayi!");
-  }
-
-  e.target.value = "";
-};
+    try {
+      setPhoto(await uploadToCloudinary(file));
+    } catch (error) {
+      console.error('Profile photo upload failed:', error);
+      alert(`Could not upload profile photo: ${error.message}`);
+    }
+  };
 
 // 🎮 Game Invite Send Handler
   const handleStartGameClick = () => {
@@ -952,19 +948,12 @@ function App() {
   const saveProfileEdit = async () => {
     if (!editUsername.trim()) return alert("Username khali nahi chodh sakte!");
     try {
-      let finalPfp = editPfp || currentUser.pfp;
-      if (finalPfp.startsWith('data:image')) {
-        finalPfp = await compressImage(finalPfp);
-      }
+      const finalPfp = await ensureHostedImage(editPfp || currentUser.pfp);
       
-      const safeFirebasePhotoURL = finalPfp.startsWith('data:image') 
-        ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${editUsername.trim()}` 
-        : finalPfp;
-
       if (auth.currentUser) {
         await updateProfile(auth.currentUser, {
           displayName: editUsername.trim(),
-          photoURL: safeFirebasePhotoURL
+          photoURL: finalPfp
         });
         
         try {
@@ -1037,18 +1026,14 @@ function App() {
       if (!username.trim()) return alert("Username toh chun lo bhai!");
       try {
         const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
-        let photoToSave = customPfp || fallbackAvatar;
-
-        if (photoToSave.startsWith('data:image')) {
-          photoToSave = await compressImage(photoToSave);
-        }
+        const photoToSave = await ensureHostedImage(customPfp || fallbackAvatar);
 
         const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
         const user = userCredential.user;
 
         await updateProfile(user, { 
           displayName: username.trim(), 
-          photoURL: photoToSave.startsWith('data:image') ? fallbackAvatar : photoToSave 
+          photoURL: photoToSave
         });
 
         const userBio = editBio.trim() || "Hey there! I am using Fi-chan Chat.";
@@ -1149,16 +1134,7 @@ function App() {
                 <label className="ctrl-btn upload-btn glass-btn">
                   📁 Upload Photo
                   <input type="file" accept="image/*" onChange={async (e) => {
-                    const file = e.target.files[0];
-                    if (file) {
-                      if (file.size > 10 * 1024 * 1024) return alert("Image 10MB se kam ki honi chahiye!");
-                      const reader = new FileReader();
-                      reader.onloadend = async () => {
-                        const compressed = await compressImage(reader.result);
-                        setCustomPfp(compressed);
-                      };
-                      reader.readAsDataURL(file);
-                    }
+                    await handleProfilePhotoUpload(e, setCustomPfp);
                   }} style={{ display: 'none' }} />
                 </label>
               </div>
@@ -1405,16 +1381,7 @@ function App() {
                     <label className="ctrl-btn upload-btn glass-btn">
                       📁 Upload Photo
                       <input type="file" accept="image/*" onChange={async (e) => {
-                        const file = e.target.files[0];
-                        if (file) {
-                          if (file.size > 10 * 1024 * 1024) return alert("Image 10MB se kam ki honi chahiye!");
-                          const reader = new FileReader();
-                          reader.onloadend = async () => {
-                            const compressed = await compressImage(reader.result);
-                            setEditPfp(compressed);
-                          };
-                          reader.readAsDataURL(file);
-                        }
+                        await handleProfilePhotoUpload(e, setEditPfp);
                       }} style={{ display: 'none' }} />
                     </label>
                   </div>
@@ -1523,6 +1490,11 @@ function App() {
                           {msg.fileUrl && msg.fileType === 'image' && <img src={msg.fileUrl} alt="Sent attachment" className="chat-shared-image" />}
                           {msg.fileUrl && msg.fileType === 'video' && <video src={msg.fileUrl} controls className="chat-shared-video" />}
                           {msg.fileUrl && msg.fileType === 'audio' && <audio src={msg.fileUrl} controls className="chat-shared-audio" />}
+                          {msg.fileUrl && msg.fileType === 'file' && (
+                            <a href={msg.fileUrl} target="_blank" rel="noreferrer" download={msg.fileName || true}>
+                              📎 {msg.fileName || 'Download file'}
+                            </a>
+                          )}
                           {msg.text && <p style={{ margin: 0, wordBreak: 'break-word' }}>{msg.text}</p>}
                           
                           <div className="msg-time-date-container">
@@ -1658,10 +1630,21 @@ function App() {
                   <label htmlFor="image-input" className="chat-action-btn">📁</label>
                   <input 
                     type="file" 
-                    accept="image/*,video/*,audio/*" 
+                    accept="*/*"
+                    multiple
                     onChange={handleFileUpload} 
                     style={{ display: 'none' }} 
                     id="image-input" 
+                  />
+                  <label htmlFor="folder-input" className="chat-action-btn" title="Send a folder">🗂️</label>
+                  <input
+                    type="file"
+                    webkitdirectory=""
+                    directory=""
+                    multiple
+                    onChange={handleFileUpload}
+                    style={{ display: 'none' }}
+                    id="folder-input"
                   />
 
                   {/* Game Button Updated */}
