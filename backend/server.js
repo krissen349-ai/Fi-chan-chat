@@ -119,12 +119,28 @@ async function sendPushToUsers(uids, title, body, chatId) {
 let users = {}; 
 let groups = [ { id: "global-group", name: "Global Group", description: "Active Session Stream", createdBy: "System" } ];
 let messages = {}; 
+let activeGames = {}; // 🎮 Game state store karne ke liye
+
+// Tic-Tac-Toe Winner Checker Helper
+function checkWinner(board) {
+    const lines = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],
+        [0, 4, 8], [2, 4, 6]
+    ];
+    for (let line of lines) {
+        const [a, b, c] = line;
+        if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+            return board[a];
+        }
+    }
+    return board.includes(null) ? null : 'DRAW';
+}
 
 // 🔌 Socket.IO Event Handlers
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
 
-    // Initial load gifts for the connected user
     Gift.find()
         .then(gifts => socket.emit('update_gifts', gifts))
         .catch(err => console.error("Error fetching initial gifts:", err.message));
@@ -140,6 +156,11 @@ io.on('connection', (socket) => {
                 console.warn('Firebase socket authentication failed:', error.message);
             }
         }
+
+        const uid = verifiedUid || publicUserData.uid;
+        users[socket.id] = { ...publicUserData, uid, verifiedUid, id: socket.id, online: true };
+
+        if (uid) socket.join(uid);
 
         io.emit('update_users', Object.values(users));
         io.emit('update_groups', groups);
@@ -161,6 +182,96 @@ io.on('connection', (socket) => {
         }
 
         try {
+            await PushToken.findOneAndUpdate(
+                { token },
+                { uid, token, updatedAt: new Date() },
+                { upsert: true, new: true, setDefaultsOnInsert: true }
+            );
+            acknowledge?.({ ok: true, pushEnabled: firebaseAdminReady });
+        } catch (error) {
+            console.error('Push token registration failed:', error.message);
+            acknowledge?.({ ok: false, error: 'Could not save push token.' });
+        }
+    });
+
+    socket.on('unregister_push_token', async ({ token } = {}) => {
+        const uid = users[socket.id]?.verifiedUid;
+        if (!uid || typeof token !== 'string') return;
+        await PushToken.deleteOne({ uid, token }).catch(error => {
+            console.error('Push token removal failed:', error.message);
+        });
+    });
+
+    // 🎮 GAME INVITE & TIC-TAC-TOE EVENTS SYSTEM
+    
+    // 1. Send Game Invite
+    socket.on('send_game_invite', ({ toUserId, senderName, chatId }) => {
+        // Target socket ya UID ko invite bhejo
+        io.to(toUserId).emit('receive_game_invite', {
+            fromUserId: socket.id,
+            senderName: senderName || 'Friend',
+            chatId
+        });
+    });
+
+    // 2. Accept Game Invite
+    socket.on('accept_game_invite', ({ chatId, fromUserId }) => {
+        const gameRoomId = `game_${chatId}`;
+        
+        activeGames[gameRoomId] = {
+            players: [
+                { socketId: fromUserId, symbol: 'X' },
+                { socketId: socket.id, symbol: 'O' }
+            ],
+            board: Array(9).fill(null),
+            turn: 'X'
+        };
+
+        // Dono players ko game room me join karwayein
+        io.sockets.sockets.get(fromUserId)?.join(gameRoomId);
+        socket.join(gameRoomId);
+
+        // Dono ko event bhejein game modal open karne ke liye
+        io.to(fromUserId).emit('game_started', { symbol: 'X', turn: 'X', gameRoomId });
+        socket.emit('game_started', { symbol: 'O', turn: 'X', gameRoomId });
+    });
+
+    // 3. Reject Game Invite
+    socket.on('reject_game_invite', ({ fromUserId }) => {
+        io.to(fromUserId).emit('game_invite_rejected');
+    });
+
+    // 4. Game Move Handlers
+    socket.on('make_move', ({ gameRoomId, newBoard, symbol }) => {
+        const game = activeGames[gameRoomId];
+        if (!game) return;
+
+        game.board = newBoard;
+        const winnerSymbol = checkWinner(newBoard);
+        const nextTurn = symbol === 'X' ? 'O' : 'X';
+        game.turn = nextTurn;
+
+        io.to(gameRoomId).emit('move_made', {
+            newBoard,
+            nextTurn,
+            winnerSymbol
+        });
+    });
+
+    socket.on('reset_game', ({ gameRoomId }) => {
+        const game = activeGames[gameRoomId];
+        if (game) {
+            game.board = Array(9).fill(null);
+            game.turn = 'X';
+            io.to(gameRoomId).emit('game_reset', { turn: 'X' });
+        }
+    });
+
+    // 🎁 Add Gift
+    socket.on('add_gift', async (giftData) => {
+        if (!giftData || !giftData.senderName || !giftData.receiverName || !giftData.giftUrl) return;
+
+        try {
             const giftObj = {
                 senderName: String(giftData.senderName).trim(),
                 receiverName: String(giftData.receiverName).trim(),
@@ -172,28 +283,18 @@ io.on('connection', (socket) => {
                 createdBy: String(giftData.createdBy || socket.id)
             };
 
-            const createdGift = await Gift.create(giftObj);
-            console.log("✅ Step 2: Database me save hogya! ID:", createdGift._id);
+            await Gift.create(giftObj);
 
-            // ✉️ Send Email to the recipient in English as requested
             if (giftObj.recipientEmail) {
                 const mailOptions = {
                     from: 'fichanchat@gmail.com',
                     to: giftObj.recipientEmail,
                     subject: `🎁 You received a special gift from ${giftObj.senderName}!`,
-                    text: `Hello ${giftObj.receiverName},\n\n${giftObj.senderName} has sent you a special gift!\n\nHere is your password to access it: ${giftObj.password || 'No password required'}\n\nEnjoy your surprise!`
+                    text: `Hello ${giftObj.receiverName},\n\n${giftObj.senderName} has sent you a special gift!\n\nPassword: ${giftObj.password || 'No password required'}\n\nEnjoy!`
                 };
-
-                transporter.sendMail(mailOptions, (error, info) => {
-                    if (error) {
-                        console.log('❌ Email sending failed:', error.message);
-                    } else {
-                        console.log('✅ Gift notification email sent:', info.response);
-                    }
-                });
+                transporter.sendMail(mailOptions);
             }
 
-            // 🔔 Push Notification to mobile / connected clients that a new gift was added
             io.emit('push_notification', {
                 type: 'NEW_GIFT',
                 title: 'New Gift Added! 🎁',
@@ -202,16 +303,13 @@ io.on('connection', (socket) => {
 
             const allGifts = await Gift.find().sort({ createdAt: -1 });
             io.emit('update_gifts', allGifts);
-            console.log("🚀 Step 3: All clients ko update_gifts broadcast kar diya!");
         } catch (err) {
             console.error("❌ ERROR inside add_gift:", err);
         }
     });
 
-    // 🎁 Delete Gift Handler
-    socket.on('delete_gift', async ({ giftId, userId }) => {
+    socket.on('delete_gift', async ({ giftId }) => {
         try {
-            console.log("🗑️ Delete requested for ID:", giftId);
             await Gift.findByIdAndDelete(giftId);
             const updatedGifts = await Gift.find().sort({ createdAt: -1 });
             io.emit('update_gifts', updatedGifts);
@@ -220,7 +318,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 🎁 Manual Get Gifts
     socket.on('get_gifts', async () => {
         try {
             const gifts = await Gift.find();
@@ -238,19 +335,18 @@ io.on('connection', (socket) => {
         }
     });
 
-  
-    socket.on('send_message', (data) => {
-    if (!messages[data.chatId]) messages[data.chatId] = [];
-    
-    // Yahan ensure karein ki data hamesha existing users se aaye
-    const sender = users[socket.id] || { username: data.senderName || "User", pfp: data.pfp };
+    socket.on('send_message', async (data) => {
+        if (!data || typeof data.chatId !== 'string' || data.chatId.length > 200) return;
+        if (!messages[data.chatId]) messages[data.chatId] = [];
+        
+        const sender = users[socket.id] || { username: data.senderName || "User", pfp: data.pfp };
 
-    const msgObject = {
-        id: data.id || `msg-${Date.now()}`, 
-        senderId: data.senderId,
-        senderName: sender.username, // Yahan backend se confirm ho raha hai
-        pfp: sender.pfp || data.pfp, // Backend se pfp le raha hai
-        text: data.text || "",
+        const msgObject = {
+            id: data.id || `msg-${Date.now()}`, 
+            senderId: sender.uid || data.senderId,
+            senderName: sender.username,
+            pfp: sender.pfp || data.pfp,
+            text: data.text || "",
             image: data.image || null,
             fileUrl: data.fileUrl || null,   
             fileType: data.fileType || null, 
@@ -261,12 +357,17 @@ io.on('connection', (socket) => {
         };
         
         messages[data.chatId].push(msgObject);
-        io.to(data.chatId).emit('receive_message', { chatId: data.chatId, message: msgObject });
-
         if (data.chatId.includes('--')) {
-            data.chatId.split('--').forEach(uid => {
-                io.to(uid).emit('receive_message', { chatId: data.chatId, message: msgObject });
-            });
+            const participants = data.chatId.split('--');
+            io.to(data.chatId).to(participants[0]).to(participants[1])
+                .emit('receive_message', { chatId: data.chatId, message: msgObject });
+
+            const senderUid = sender.uid;
+            const recipients = participants.filter(uid => uid && uid !== senderUid);
+            const preview = msgObject.text || (msgObject.fileType ? `Sent ${msgObject.fileType}` : 'Sent an attachment');
+            await sendPushToUsers(recipients, msgObject.senderName || sender.username || 'New message', preview, data.chatId);
+        } else {
+            io.to(data.chatId).emit('receive_message', { chatId: data.chatId, message: msgObject });
         }
     });
 
@@ -283,7 +384,6 @@ io.on('connection', (socket) => {
                 }
 
                 io.to(chatId).emit('messages_updated', { chatId, messages: messages[chatId] });
-                
                 if (chatId.includes('--')) {
                     chatId.split('--').forEach(uid => {
                         io.to(uid).emit('messages_updated', { chatId, messages: messages[chatId] });
@@ -346,7 +446,6 @@ io.on('connection', (socket) => {
         io.to(data.chatId).emit('message_deleted', data);
     });
 
-    // Disconnect
     socket.on('disconnect', () => {
         delete users[socket.id];
         io.emit('update_users', Object.values(users));
