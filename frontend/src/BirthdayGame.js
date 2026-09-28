@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 const BirthdayGame = ({ onFinish }) => {
   const canvasRef = useRef(null);
@@ -160,7 +160,7 @@ const BirthdayGame = ({ onFinish }) => {
   };
 
   // Shockwave Explosions
-  const spawnShockwave = (x, y, color) => {
+  const spawnShockwave = useCallback((x, y, color) => {
     gameState.current.shockwaves.push({
       x,
       y,
@@ -169,10 +169,10 @@ const BirthdayGame = ({ onFinish }) => {
       alpha: 1.0,
       color
     });
-  };
+  }, []);
 
   // High Density Particles
-  const spawnPopParticles = (x, y, color) => {
+  const spawnPopParticles = useCallback((x, y, color) => {
     gameState.current.shakeTime = 18; // Massive Shake
     spawnShockwave(x, y, color);
 
@@ -191,7 +191,7 @@ const BirthdayGame = ({ onFinish }) => {
         decay: Math.random() * 0.035 + 0.018
       });
     }
-  };
+  }, [spawnShockwave]);
 
   const triggerWinConfetti = () => {
     const colors = ['#f43f5e', '#fbbf24', '#3b82f6', '#10b981', '#a855f7', '#ec4899', '#38bdf8'];
@@ -589,7 +589,7 @@ const BirthdayGame = ({ onFinish }) => {
 
     render();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gameOver]);
+  }, [gameOver, spawnPopParticles]);
 
   // Touch/Mouse Controls
   const getCanvasCoords = (e) => {
