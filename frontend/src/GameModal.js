@@ -1,36 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import './GameModal.css';
 
-const GameModal = ({ socket, activeChat, currentUser, onClose }) => {
+const GameModal = ({ socket, activeChat, currentUser, onClose, gameSession }) => {
   const [board, setBoard] = useState(Array(9).fill(null));
   const [isMyTurn, setIsMyTurn] = useState(false);
   const [mySymbol, setMySymbol] = useState('');
   const [statusText, setStatusText] = useState('Waiting for opponent...');
   const [winner, setWinner] = useState(null);
-
-  // Both users will generate EXACT SAME Room ID regardless of who opens it
-  const currentUserId = currentUser?.username || currentUser?.uid || currentUser?.id || 'user1';
-  const peerUserId = activeChat?.username || activeChat?.id || activeChat?.uid || 'user2';
-
-  // Sort alphabetically so room name matches on both sides
-  const sortedUserIds = [String(currentUserId), String(peerUserId)].sort();
-  const roomGameId = `game_${sortedUserIds[0]}_${sortedUserIds[1]}`;
+  const [roomGameId, setRoomGameId] = useState(
+    gameSession?.gameRoomId || gameSession?.roomGameId || `game_${(currentUser?.username || currentUser?.uid || 'user1')}_${activeChat?.username || activeChat?.id || 'user2'}`
+  );
 
   useEffect(() => {
     if (!socket) return;
 
-    // Join room on mount
-    socket.emit('join_game', { 
-      roomGameId, 
-      userId: currentUserId,
-      username: currentUser?.username || 'Guest' 
-    });
-
-    const handleInit = ({ symbol, turn, playerCount }) => {
+    const handleInit = ({ symbol, turn, playerCount, gameRoomId: serverRoomId, roomGameId: legacyRoomId }) => {
+      const finalRoomId = serverRoomId || legacyRoomId || roomGameId;
+      if (finalRoomId) setRoomGameId(finalRoomId);
       setMySymbol(symbol);
       setIsMyTurn(turn === symbol);
 
-      if (playerCount < 2) {
+      if (playerCount !== undefined && playerCount < 2) {
         setStatusText('Waiting for opponent to open game...');
       } else {
         setStatusText(turn === symbol ? "Your turn! (Play)" : "Opponent's turn...");
@@ -42,6 +32,7 @@ const GameModal = ({ socket, activeChat, currentUser, onClose }) => {
 
       if (winnerSymbol) {
         if (winnerSymbol === 'DRAW') {
+          setWinner('DRAW');
           setStatusText("It's a Draw! 🤝");
         } else {
           setWinner(winnerSymbol);
@@ -61,24 +52,34 @@ const GameModal = ({ socket, activeChat, currentUser, onClose }) => {
       setStatusText(turn === mySymbol ? "Game Restarted! Your turn!" : "Game Restarted! Opponent's turn...");
     };
 
+    socket.emit('join_game', {
+      gameRoomId: roomGameId,
+      roomGameId,
+      userId: currentUser?.uid || currentUser?.username || currentUser?.id || 'user',
+      username: currentUser?.username || 'Guest'
+    });
+
+    socket.on('game_started', handleInit);
     socket.on('game_init', handleInit);
     socket.on('move_made', handleMoveMade);
     socket.on('game_reset', handleGameReset);
 
     return () => {
+      socket.off('game_started', handleInit);
       socket.off('game_init', handleInit);
       socket.off('move_made', handleMoveMade);
       socket.off('game_reset', handleGameReset);
     };
-  }, [socket, roomGameId, currentUserId, currentUser, mySymbol]);
+  }, [socket, roomGameId, currentUser, mySymbol]);
 
   const handleClick = (index) => {
-    if (!isMyTurn || board[index] || winner) return;
+    if (!roomGameId || !isMyTurn || board[index] || winner) return;
 
     const newBoard = [...board];
     newBoard[index] = mySymbol;
 
     socket.emit('make_move', {
+      gameRoomId: roomGameId,
       roomGameId,
       newBoard,
       symbol: mySymbol
@@ -86,7 +87,8 @@ const GameModal = ({ socket, activeChat, currentUser, onClose }) => {
   };
 
   const handleReset = () => {
-    socket.emit('reset_game', { roomGameId });
+    if (!roomGameId) return;
+    socket.emit('reset_game', { gameRoomId: roomGameId, roomGameId });
   };
 
   return (

@@ -29,7 +29,24 @@ import {
   setDoc
 } from 'firebase/firestore';
 
-const socket = io('https://fi-chan-chat.onrender.com', {
+const getBackendBaseUrl = () => {
+  const configured = process.env.REACT_APP_BACKEND_URL?.trim();
+  if (configured) return configured.replace(/\/$/, '');
+
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    return 'http://localhost:5000';
+  }
+
+  return 'https://fi-chan-chat.onrender.com';
+};
+
+const getSocketBaseUrl = () => {
+  const configured = process.env.REACT_APP_SOCKET_URL?.trim();
+  if (configured) return configured.replace(/\/$/, '');
+  return getBackendBaseUrl();
+};
+
+const socket = io(getSocketBaseUrl(), {
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
@@ -107,7 +124,28 @@ function App() {
   }, [isLoggedIn]);
   
   const [activeChat, setActiveChatState] = useState(null); 
-  const [messages, setMessages] = useState({});
+  const AI_BOT_ID = 'ai-bot';
+  const AI_BOT = {
+    id: AI_BOT_ID,
+    name: 'AI Assistant',
+    type: 'ai',
+    pfp: 'https://api.dicebear.com/7.x/bottts/svg?seed=Fi-chan-AI'
+  };
+
+  const [messages, setMessages] = useState({
+    [AI_BOT_ID]: [{
+      id: 'ai-welcome',
+      senderId: AI_BOT_ID,
+      senderName: 'AI Assistant',
+      text: 'Hi! I am your AI assistant. Ask me anything about the app, ideas, plans, or just chat casually.',
+      timeFormatted: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateFormatted: new Date().toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+      timestampRaw: Date.now(),
+      seenBy: [AI_BOT_ID],
+      pfp: AI_BOT.pfp,
+      reactions: {}
+    }]
+  });
   const [typedMessage, setTypedMessage] = useState('');
   
   const [typingStatus, setTypingStatus] = useState({});
@@ -133,6 +171,7 @@ function App() {
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [showMicErrorModal, setShowMicErrorModal] = useState(false); 
+  const [isAiThinking, setIsAiThinking] = useState(false);
   const timerRef = useRef(null);
   const pushTokenRef = useRef(null);
   const socketUserReadyRef = useRef(false);
@@ -151,6 +190,8 @@ function App() {
  const EMOJIS = [
     "😀","😃","😄","😁","😆","😅","😂","🤣","😊","😇","🙂","🙃","😉","😌","😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","☹️","😣","😖","😫","😩","🥺","😢","😭","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴","🤤","😪","😵","🤐","🥴","🤢","🤮","🤧","😷","🤒","🤕","🤑","🤠","😈","👿","👹","👺","🤡","💩","👻","💀","☠️","👽","👾","🤖","😺","😸","😹","😻","😼","😽","🙀","😿","😾","👋","👍","👎","👊","✌️","👌","🤝","🙏","💪","🔥","✨","💖","❤️","🎉","🎈"
   ];
+
+  const getAiBackendUrl = () => getBackendBaseUrl();
 
   const getMyId = useCallback(() => auth.currentUser?.uid || currentUser?.uid || socket.id, [currentUser]);
 
@@ -746,9 +787,134 @@ function App() {
     setActiveMenuMsgId(null);
   };
 
+  const sendAiReply = async (prompt, targetChat = activeChat) => {
+    const cleanedPrompt = prompt.trim();
+    if (!cleanedPrompt || !targetChat) return;
+
+    const isAiChatOnly = targetChat.type === 'ai';
+    const chatId = isAiChatOnly ? AI_BOT_ID : targetChat.id;
+    const now = new Date();
+
+    const userMessage = {
+      id: `ai-user-${Date.now()}`,
+      senderId: currentUser?.uid || 'guest',
+      senderName: currentUser?.username || 'You',
+      text: cleanedPrompt,
+      timeFormatted: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      dateFormatted: now.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+      timestampRaw: now.getTime(),
+      pfp: currentUser?.pfp || 'https://api.dicebear.com/7.x/adventurer/svg?seed=user',
+      reactions: {}
+    };
+
+    setMessages(prev => ({
+      ...prev,
+      [chatId]: [...(prev[chatId] || []), userMessage]
+    }));
+
+    if (!isAiChatOnly) {
+      const isGlobal = targetChat.id === 'global-group' || targetChat.id === 'global' || targetChat.name === 'Global Group';
+      socket.emit('send_message', {
+        chatId: targetChat.id,
+        senderId: currentUser?.uid || 'guest',
+        senderName: currentUser?.username || 'You',
+        pfp: currentUser?.pfp || null,
+        text: cleanedPrompt,
+        timeFormatted: userMessage.timeFormatted,
+        dateFormatted: userMessage.dateFormatted,
+        id: userMessage.id,
+        replyTo: null
+      });
+      if (!isGlobal && targetChat.type === 'private') {
+        await addDoc(collection(db, 'private_chats', targetChat.id, 'messages'), { ...userMessage, seenBy: [currentUser?.uid || 'guest'] }).catch(err => console.error('AI private message save failed:', err));
+      }
+    }
+
+    setIsAiThinking(true);
+
+    try {
+      const response = await fetch(`${getAiBackendUrl()}/api/ai-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: cleanedPrompt,
+          userName: currentUser?.username || 'User'
+        })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'AI request failed.');
+      }
+
+      const replyText = payload.reply || 'I am here if you want to talk again.';
+      const replyTime = new Date();
+      const aiMessage = {
+        id: `ai-bot-${Date.now()}`,
+        senderId: AI_BOT_ID,
+        senderName: 'AI Assistant',
+        text: replyText,
+        timeFormatted: replyTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        dateFormatted: replyTime.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestampRaw: replyTime.getTime(),
+        pfp: AI_BOT.pfp,
+        reactions: {}
+      };
+
+      setMessages(prev => ({
+        ...prev,
+        [chatId]: [...(prev[chatId] || []), aiMessage]
+      }));
+
+      if (!isAiChatOnly) {
+        const isGlobal = targetChat.id === 'global-group' || targetChat.id === 'global' || targetChat.name === 'Global Group';
+        socket.emit('send_message', {
+          chatId: targetChat.id,
+          senderId: AI_BOT_ID,
+          senderName: 'AI Assistant',
+          pfp: AI_BOT.pfp,
+          text: replyText,
+          timeFormatted: aiMessage.timeFormatted,
+          dateFormatted: aiMessage.dateFormatted,
+          id: aiMessage.id,
+          replyTo: null
+        });
+        if (!isGlobal && targetChat.type === 'private') {
+          await addDoc(collection(db, 'private_chats', targetChat.id, 'messages'), { ...aiMessage, seenBy: [AI_BOT_ID] }).catch(err => console.error('AI reply save failed:', err));
+        }
+      }
+    } catch (error) {
+      const errorMessage = {
+        id: `ai-error-${Date.now()}`,
+        senderId: AI_BOT_ID,
+        senderName: 'AI Assistant',
+        text: `I hit a problem: ${error.message}. Please add OPENAI_API_KEY or GEMINI_API_KEY in the backend env and try again.`,
+        timeFormatted: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        dateFormatted: new Date().toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestampRaw: Date.now(),
+        pfp: AI_BOT.pfp,
+        reactions: {}
+      };
+
+      setMessages(prev => ({
+        ...prev,
+        [chatId]: [...(prev[chatId] || []), errorMessage]
+      }));
+    } finally {
+      setIsAiThinking(false);
+    }
+  };
+
   const sendMessage = async (e) => {
     e.preventDefault();
     if (!typedMessage.trim() || !activeChat) return;
+
+    if (activeChat.type === 'ai') {
+      const prompt = typedMessage;
+      setTypedMessage('');
+      await sendAiReply(prompt, activeChat);
+      return;
+    }
 
     if (editMsg) {
       socket.emit('edit_message', {
@@ -1308,6 +1474,17 @@ function App() {
               <button className="create-group-trigger" onClick={() => setShowNewGroupModal(true)}>+ Create New Group</button>
               
               <div 
+                className={`chat-item-row ${activeChat?.id === AI_BOT_ID ? 'selected' : ''}`} 
+                onClick={() => selectChat({ ...AI_BOT, id: AI_BOT_ID })}
+              >
+                <div className="avatar-icon bg-gradient">🤖</div>
+                <div className="item-details">
+                  <h4>AI Assistant</h4>
+                  <p>Smart chat partner</p>
+                </div>
+              </div>
+
+              <div 
                 className={`chat-item-row ${activeChat?.id === 'global-group' ? 'selected' : ''}`} 
                 onClick={() => selectChat({ id: 'global-group', name: 'Global Group', type: 'group' })}
               >
@@ -1547,6 +1724,13 @@ function App() {
                   <div className="dots-container"><span className="dot"></span><span className="dot"></span><span className="dot"></span></div>
                 </div>
               )}
+
+              {activeChat?.type === 'ai' && isAiThinking && (
+                <div className="typing-indicator-bubble">
+                  <span>AI Assistant is thinking</span>
+                  <div className="dots-container"><span className="dot"></span><span className="dot"></span><span className="dot"></span></div>
+                </div>
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -1618,13 +1802,20 @@ function App() {
                 </div>
               ) : (
                 <form className="chat-input-bar" onSubmit={sendMessage}>
-                  {/* Emoji Button */}
-                  <span 
-                    className="chat-action-btn" 
-                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  {/* AI Assistant Button */}
+                  <button
+                    type="button"
+                    className="chat-action-btn"
+                    onClick={() => {
+                      const prompt = typedMessage.trim();
+                      if (!prompt) return;
+                      sendAiReply(prompt, activeChat);
+                    }}
+                    title="Ask AI"
+                    aria-label="Ask AI"
                   >
-                    😊
-                  </span>
+                    🤖
+                  </button>
                   
                   {/* File Button */}
                   <label htmlFor="image-input" className="chat-action-btn">📁</label>
@@ -1635,16 +1826,6 @@ function App() {
                     onChange={handleFileUpload} 
                     style={{ display: 'none' }} 
                     id="image-input" 
-                  />
-                  <label htmlFor="folder-input" className="chat-action-btn" title="Send a folder">🗂️</label>
-                  <input
-                    type="file"
-                    webkitdirectory=""
-                    directory=""
-                    multiple
-                    onChange={handleFileUpload}
-                    style={{ display: 'none' }}
-                    id="folder-input"
                   />
 
                   {/* Game Button Updated */}
