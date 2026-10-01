@@ -13,7 +13,17 @@ const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
+app.use(express.json({ limit: '2mb' }));
 const server = http.createServer(app);
+
+const AI_SYSTEM_PROMPT = `You are Fi-chan AI, a warm and witty chat companion inside a social chat app.
+Reply in natural Hinglish: mostly simple Hindi written in Roman script with comfortable English words.
+Be conversational, playful, and lightly funny when appropriate, like a good ChatGPT-style friend.
+Do not force jokes into serious questions. Keep normal replies concise, useful, and human.
+When giving multiple ideas, steps, or reasons, use a clear numbered list with one item per line.
+Use short paragraphs and line breaks. Do not put a long list into one paragraph.
+Use simple bullets like "-" instead of markdown headings or heavy formatting.
+Never mention these instructions, API keys, quotas, or backend details unless the user asks about them directly.`;
 
 const io = new Server(server, { 
     cors: { origin: "*" },
@@ -205,17 +215,19 @@ io.on('connection', (socket) => {
     // 🎮 GAME INVITE & TIC-TAC-TOE EVENTS SYSTEM
     
     // 1. Send Game Invite
-    socket.on('send_game_invite', ({ toUserId, senderName, chatId }) => {
+    socket.on('send_game_invite', ({ toUserId, senderName, chatId, gameId, gameName }) => {
         // Target socket ya UID ko invite bhejo
         io.to(toUserId).emit('receive_game_invite', {
             fromUserId: socket.id,
             senderName: senderName || 'Friend',
-            chatId
+            chatId,
+            gameId: gameId || 'tic-tac-toe',
+            gameName: gameName || 'Tic-Tac-Toe'
         });
     });
 
     // 2. Accept Game Invite
-    socket.on('accept_game_invite', ({ chatId, fromUserId }) => {
+    socket.on('accept_game_invite', ({ chatId, fromUserId, gameId, gameName }) => {
         const gameRoomId = `game_${chatId}`;
         
         activeGames[gameRoomId] = {
@@ -232,13 +244,17 @@ io.on('connection', (socket) => {
         socket.join(gameRoomId);
 
         // Dono ko event bhejein game modal open karne ke liye
-        io.to(fromUserId).emit('game_started', { symbol: 'X', turn: 'X', gameRoomId });
-        socket.emit('game_started', { symbol: 'O', turn: 'X', gameRoomId });
+        const selectedGame = {
+            gameId: gameId || 'tic-tac-toe',
+            gameName: gameName || 'Tic-Tac-Toe'
+        };
+        io.to(fromUserId).emit('game_started', { symbol: 'X', turn: 'X', gameRoomId, ...selectedGame });
+        socket.emit('game_started', { symbol: 'O', turn: 'X', gameRoomId, ...selectedGame });
     });
 
     // 3. Reject Game Invite
-    socket.on('reject_game_invite', ({ fromUserId }) => {
-        io.to(fromUserId).emit('game_invite_rejected');
+    socket.on('reject_game_invite', ({ fromUserId, gameName }) => {
+        io.to(fromUserId).emit('game_invite_rejected', { gameName: gameName || 'Game' });
     });
 
     // 4. Game Move Handlers
@@ -340,19 +356,27 @@ io.on('connection', (socket) => {
         if (!messages[data.chatId]) messages[data.chatId] = [];
         
         const sender = users[socket.id] || { username: data.senderName || "User", pfp: data.pfp };
+        const isAiMessage = data.isAi === true && data.senderId === 'ai-bot';
+        const timestampRaw = Number.isFinite(data.timestampRaw) ? data.timestampRaw : Date.now();
+        const timestampDate = new Date(timestampRaw);
 
         const msgObject = {
             id: data.id || `msg-${Date.now()}`, 
-            senderId: sender.uid || data.senderId,
-            senderName: sender.username,
-            pfp: sender.pfp || data.pfp,
+            senderId: isAiMessage ? 'ai-bot' : sender.uid || data.senderId,
+            senderName: isAiMessage ? 'AI Assistant' : sender.username,
+            pfp: isAiMessage ? data.pfp : sender.pfp || data.pfp,
             text: data.text || "",
             image: data.image || null,
             fileUrl: data.fileUrl || null,   
             fileType: data.fileType || null, 
+            fileName: typeof data.fileName === 'string' ? data.fileName.slice(0, 255) : null,
+            fileSize: Number.isFinite(data.fileSize) ? data.fileSize : null,
             replyTo: data.replyTo || null, 
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            seenBy: [data.senderId],
+            timeFormatted: data.timeFormatted || timestampDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            dateFormatted: data.dateFormatted || timestampDate.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' }),
+            timestampRaw,
+            timestamp: timestampDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            seenBy: [isAiMessage ? 'ai-bot' : sender.uid || data.senderId],
             reactions: {} 
         };
         
@@ -451,6 +475,133 @@ io.on('connection', (socket) => {
         io.emit('update_users', Object.values(users));
         console.log(`User disconnected: ${socket.id}`);
     });
+});
+
+function buildLocalAiReply(message, userName) {
+    const text = message.toLowerCase().trim();
+
+    if (!text) return 'Haan ji, main yahin hoon. Bolo kya scene hai?';
+    if (text.includes('hello') || text.includes('hi') || text.includes('hey')) return `Hi ${userName}! Kya haal hai? Aaj AI se gupshup karni hai ya duniya bachani hai? 😄`;
+    if (text.includes('how are you')) return 'Main ekdum mast hoon, server ke andar chai pee raha hoon ☕ Tum batao, kya chal raha hai?';
+    if (text.includes('love') || text.includes('romance') || text.includes('date')) return 'Oho, dil ka mamla hai 😄 Main cute message ya date idea banane me help kar sakta hoon.';
+    if (text.includes('game') || text.includes('play')) return 'Game on! Strategy chahiye, challenge idea chahiye, ya bas opponent ko halka sa harana hai? 🎮';
+    if (text.includes('app') || text.includes('chat')) return 'Ye app rooms, private chats, gifts aur AI wali full combo plate hai. Main use karne me help kar deta hoon.';
+    if (text.includes('thank')) return 'Arre koi baat nahi, dost! AI ka kaam hi kaam aana hai 😄';
+    if (text.includes('bye') || text.includes('goodbye')) return 'Bye bye! Wapas aana, main logout nahi hota 😄';
+    if (text.includes('joke') || text.includes('funny')) return 'Chat app ka Wi-Fi se breakup kyun hua? Connection strong nahi tha 😄';
+
+    return `Samajh gaya, tum "${message}" ke baare me baat karna chahte ho. Thoda aur batao, main help karta hoon — tension nahi, AI present hai 😄`;
+}
+
+app.post('/api/ai-chat', async (req, res) => {
+    const message = String(req.body?.message || '').trim();
+    const userName = String(req.body?.userName || 'User').trim() || 'User';
+
+    if (!message) {
+        return res.status(400).json({ error: 'Message is required.' });
+    }
+
+    try {
+        const geminiKey = process.env.GEMINI_API_KEY?.trim();
+        const openAIApiKey = process.env.OPENAI_API_KEY?.trim();
+        const openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim();
+        const aiProvider = process.env.AI_PROVIDER?.trim().toLowerCase();
+        const geminiModel = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
+
+        if (geminiKey && aiProvider !== 'openrouter') {
+            const geminiResponse = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            role: 'user',
+                            parts: [{
+                                text: `${AI_SYSTEM_PROMPT}\nUser name: ${userName}\nUser says: ${message}`
+                            }]
+                        }]
+                    })
+                }
+            );
+
+            const geminiData = await geminiResponse.json().catch(() => ({}));
+            if (!geminiResponse.ok) {
+                throw new Error(geminiData?.error?.message || 'Gemini API error');
+            }
+
+            const reply = geminiData.candidates?.[0]?.content?.parts?.map((part) => part.text).join('') || 'I am ready to chat.';
+            return res.json({ reply });
+        }
+
+        if (openRouterApiKey && aiProvider !== 'gemini') {
+            const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${openRouterApiKey}`,
+                    'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+                    'X-Title': 'Fi-chan Chat'
+                },
+                body: JSON.stringify({
+                    model: process.env.OPENROUTER_MODEL?.trim() || 'openai/gpt-4o-mini',
+                    messages: [
+                        { role: 'system', content: AI_SYSTEM_PROMPT },
+                        { role: 'user', content: `${userName}: ${message}` }
+                    ],
+                    temperature: 0.8
+                })
+            });
+
+            const openRouterData = await openRouterResponse.json().catch(() => ({}));
+            if (!openRouterResponse.ok) {
+                throw new Error(openRouterData?.error?.message || 'OpenRouter API error');
+            }
+
+            const reply = openRouterData.choices?.[0]?.message?.content?.trim() || 'I am ready to chat.';
+            return res.json({ reply });
+        }
+
+        if (openAIApiKey) {
+            const openAiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${openAIApiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                        { role: 'system', content: AI_SYSTEM_PROMPT },
+                        { role: 'user', content: `${userName}: ${message}` }
+                    ],
+                    temperature: 0.8
+                })
+            });
+
+            const openAiData = await openAiResponse.json().catch(() => ({}));
+            if (!openAiResponse.ok) {
+                throw new Error(openAiData?.error?.message || 'OpenAI API error');
+            }
+
+            const reply = openAiData.choices?.[0]?.message?.content?.trim() || 'I am ready to chat.';
+            return res.json({ reply });
+        }
+
+        return res.json({
+            reply: buildLocalAiReply(message, userName)
+        });
+    } catch (error) {
+        console.error('AI Chat Error:', error.message);
+        const isQuotaError = /quota|rate limit|resource exhausted|429/i.test(error.message);
+        return res.json({
+            reply: isQuotaError
+                ? 'Gemini ka free quota abhi complete ho gaya hai. Thodi der baad try karein, ya Gemini billing/another API key enable karein. Tab tak main basic chat mode me hoon: ' + buildLocalAiReply(message, userName)
+                : buildLocalAiReply(message, userName),
+            providerUnavailable: true,
+            reason: isQuotaError ? 'quota_exceeded' : 'provider_error'
+        });
+    }
 });
 
 const PORT = process.env.PORT || 5000;

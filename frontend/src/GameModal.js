@@ -95,7 +95,7 @@ const GameModal = ({ socket, activeChat, currentUser, onClose, gameSession }) =>
     <div className="modal-overlay">
       <div className="game-modal-card animate-pop-in">
         <div className="game-header">
-          <h3>🎮 Tic-Tac-Toe</h3>
+          <h3>🎮 {gameSession?.gameName || 'Tic-Tac-Toe'}</h3>
           <button className="close-game-btn" onClick={onClose}>✕</button>
         </div>
 

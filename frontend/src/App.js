@@ -4,6 +4,7 @@ import './App.css';
 import appLogo from './fi chat.jpg'; 
 import Gifts from './Gifts'; 
 import GameModal from './GameModal';
+import GamesLobby from './GamesLobby';
 import { deleteToken, getToken, onMessage } from "firebase/messaging";
 import { set, get, del } from 'idb-keyval';
 
@@ -28,6 +29,22 @@ import {
   doc,     
   setDoc
 } from 'firebase/firestore';
+
+const LineIcon = ({ name, size = 19 }) => {
+  const paths = {
+    bot: <><rect x="4" y="6" width="16" height="13" rx="3" /><path d="M12 2v4M8 12h.01M16 12h.01M8 16h8" /><path d="M2 11h2M20 11h2" /></>,
+    paperclip: <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" />,
+    gamepad: <><path d="M6 9h12a5 5 0 0 1 4.8 6.4l-1.1 3.7a2.5 2.5 0 0 1-4.2.9L15 18H9l-2.5 2a2.5 2.5 0 0 1-4.2-.9l-1.1-3.7A5 5 0 0 1 6 9Z" /><path d="M8 12v4M6 14h4M17 13h.01M19 16h.01" /></>,
+    mic: <><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" /></>,
+    send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>
+  };
+
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[name]}
+    </svg>
+  );
+};
 
 const getBackendBaseUrl = () => {
   const configured = process.env.REACT_APP_BACKEND_URL?.trim();
@@ -116,9 +133,31 @@ function App() {
     const q = query(collection(db, "users"));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedUsers = snapshot.docs.map(doc => doc.data());
-      setAllRegisteredUsers(fetchedUsers.filter(u => u.uid !== currentUid));
-    }, (err) => console.log("Users snapshot error:", err));
+      const fetchedUsers = snapshot.docs.map(userDoc => userDoc.data()).filter(user => user?.uid);
+      let cachedUsers = [];
+      try {
+        cachedUsers = JSON.parse(localStorage.getItem('chat_registered_users_cache') || '[]');
+      } catch (error) {
+        console.warn('Could not read registered users cache:', error);
+      }
+      const userMap = new Map(cachedUsers.filter(user => user?.uid).map(user => [user.uid, user]));
+      fetchedUsers.forEach(user => userMap.set(user.uid, user));
+      const mergedUsers = Array.from(userMap.values());
+      try {
+        localStorage.setItem('chat_registered_users_cache', JSON.stringify(mergedUsers));
+      } catch (error) {
+        console.warn('Could not cache registered users:', error);
+      }
+      setAllRegisteredUsers(mergedUsers.filter(user => user.uid !== currentUid));
+    }, (err) => {
+      console.log("Users snapshot error:", err);
+      try {
+        const cachedUsers = JSON.parse(localStorage.getItem('chat_registered_users_cache') || '[]');
+        setAllRegisteredUsers(cachedUsers.filter(user => user.uid !== currentUid));
+      } catch (error) {
+        console.warn('Could not restore registered users cache:', error);
+      }
+    });
 
     return () => unsubscribe();
   }, [isLoggedIn]);
@@ -167,6 +206,7 @@ function App() {
 // Line 149-152 ko aisa kar dein:
   const [gameInvite, setGameInvite] = useState(null); // Pending challenge
   const [gameSession, setGameSession] = useState(null); // Active Game State
+  const [showGamesLobby, setShowGamesLobby] = useState(false);
   const [isRecording, setIsRecording] = useState(false); // 👈 Uncomment Karein
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -338,9 +378,11 @@ function App() {
           }, 1500);
 
           get('chat_active_chat').then((savedChat) => {
-            if (savedChat) {
+            if (savedChat && savedChat.type !== 'ai') {
               setActiveChatState(savedChat);
               socket.emit('join_chat', savedChat.id);
+            } else if (savedChat?.type === 'ai') {
+              del('chat_active_chat');
             }
           }).catch(() => del('chat_active_chat'));
         } else {
@@ -438,7 +480,7 @@ function App() {
     const currentChatMessages = messages[activeChat.id] || [];
     if (currentChatMessages.length > 0) {
       const lastMessage = currentChatMessages[currentChatMessages.length - 1];
-      const seenArray = lastMessage.seenBy || [];
+      const seenArray = Array.isArray(lastMessage.seenBy) ? lastMessage.seenBy : [];
       const myId = getMyId();
       if (lastMessage.senderId !== myId && !seenArray.includes(myId)) {
         socket.emit("messageSeen", {
@@ -497,10 +539,11 @@ function App() {
       const updated = { ...prev };
       const chatMsgs = updated[chatId] ? [...updated[chatId]] : [];
       const msgIndex = chatMsgs.findIndex((m) => m.id === messageId);
-      if (msgIndex !== -1 && !chatMsgs[msgIndex].seenBy.includes(userId)) {
+      const seenBy = Array.isArray(chatMsgs[msgIndex]?.seenBy) ? chatMsgs[msgIndex].seenBy : [];
+      if (msgIndex !== -1 && !seenBy.includes(userId)) {
         chatMsgs[msgIndex] = {
           ...chatMsgs[msgIndex],
-          seenBy: [...chatMsgs[msgIndex].seenBy, userId],
+          seenBy: [...seenBy, userId],
         };
       }
       updated[chatId] = chatMsgs;
@@ -532,8 +575,8 @@ function App() {
     setGameSession(data); // Launch Game Modal
   };
 
-  const handleGameInviteRejected = () => {
-    alert("Opponent rejected the game invite! ❌");
+  const handleGameInviteRejected = ({ gameName } = {}) => {
+    alert(`${gameName || 'Game'} request was declined. ❌`);
   };
 
   // --- 1. ATTACH ALL SOCKET LISTENERS (ONCE) ---
@@ -822,6 +865,7 @@ function App() {
         text: cleanedPrompt,
         timeFormatted: userMessage.timeFormatted,
         dateFormatted: userMessage.dateFormatted,
+        timestampRaw: userMessage.timestampRaw,
         id: userMessage.id,
         replyTo: null
       });
@@ -876,7 +920,9 @@ function App() {
           text: replyText,
           timeFormatted: aiMessage.timeFormatted,
           dateFormatted: aiMessage.dateFormatted,
+          timestampRaw: aiMessage.timestampRaw,
           id: aiMessage.id,
+          isAi: true,
           replyTo: null
         });
         if (!isGlobal && targetChat.type === 'private') {
@@ -909,8 +955,10 @@ function App() {
     e.preventDefault();
     if (!typedMessage.trim() || !activeChat) return;
 
-    if (activeChat.type === 'ai') {
-      const prompt = typedMessage;
+    const mentionText = typedMessage.trim();
+    if (mentionText.toLowerCase().startsWith('@ai')) {
+      const prompt = mentionText.replace(/^@ai\b\s*/i, '').trim();
+      if (!prompt) return;
       setTypedMessage('');
       await sendAiReply(prompt, activeChat);
       return;
@@ -963,6 +1011,7 @@ function App() {
       text: textToSend,
       timeFormatted: msgObject.timeFormatted,
       dateFormatted: msgObject.dateFormatted,
+      timestampRaw: msgObject.timestampRaw,
       id: msgId,
       replyTo: msgObject.replyTo
     });
@@ -1026,6 +1075,7 @@ function App() {
           fileType,
           fileName: file.webkitRelativePath || file.name,
           fileSize: file.size,
+          timestampRaw: msgObject.timestampRaw,
           id: msgObject.id,
           replyTo: msgObject.replyTo
         });
@@ -1065,18 +1115,29 @@ function App() {
 
 // 🎮 Game Invite Send Handler
   const handleStartGameClick = () => {
-    if (!activeChat) return;
+    if (!activeChat || activeChat.type !== 'private') {
+      return alert('Games are available in private chats only right now.');
+    }
+    setShowGamesLobby(true);
+  };
 
-    // Direct User ko target karne ke liye UID ya ActiveChat ID ka use
-    const targetUserId = activeChat.userObj?.id || activeChat.id;
+  const sendGameInvite = (game) => {
+    const targetUserId = activeChat?.userObj?.uid || activeChat?.userObj?.id;
+    if (!targetUserId) return alert('This chat partner is not available for a game invite.');
 
     socket.emit('send_game_invite', {
       toUserId: targetUserId,
       senderName: currentUser?.username || 'Friend',
-      chatId: activeChat.id
+      chatId: activeChat.id,
+      gameId: game.id,
+      gameName: game.name
     });
+    setShowGamesLobby(false);
+    alert(`${game.name} invite sent! 🎮`);
+  };
 
-    alert("Game Invite sent to opponent! 🎮");
+  const handleQuickPlay = () => {
+    sendGameInvite({ id: 'tic-tac-toe', name: 'Tic-Tac-Toe' });
   };
 
   // 🎮 Accept Invite
@@ -1084,14 +1145,20 @@ function App() {
     if (!gameInvite) return;
     socket.emit('accept_game_invite', {
       chatId: gameInvite.chatId,
-      fromUserId: gameInvite.fromUserId
+      fromUserId: gameInvite.fromUserId,
+      gameId: gameInvite.gameId,
+      gameName: gameInvite.gameName
     });
+    setGameInvite(null);
   };
 
   // 🎮 Decline Invite
   const handleRejectInvite = () => {
     if (!gameInvite) return;
-    socket.emit('reject_game_invite', { fromUserId: gameInvite.fromUserId });
+    socket.emit('reject_game_invite', {
+      fromUserId: gameInvite.fromUserId,
+      gameName: gameInvite.gameName
+    });
     setGameInvite(null);
   };
 
@@ -1474,17 +1541,6 @@ function App() {
               <button className="create-group-trigger" onClick={() => setShowNewGroupModal(true)}>+ Create New Group</button>
               
               <div 
-                className={`chat-item-row ${activeChat?.id === AI_BOT_ID ? 'selected' : ''}`} 
-                onClick={() => selectChat({ ...AI_BOT, id: AI_BOT_ID })}
-              >
-                <div className="avatar-icon bg-gradient">🤖</div>
-                <div className="item-details">
-                  <h4>AI Assistant</h4>
-                  <p>Smart chat partner</p>
-                </div>
-              </div>
-
-              <div 
                 className={`chat-item-row ${activeChat?.id === 'global-group' ? 'selected' : ''}`} 
                 onClick={() => selectChat({ id: 'global-group', name: 'Global Group', type: 'group' })}
               >
@@ -1620,7 +1676,11 @@ function App() {
           <>
             <div className="chat-header">
               <button className="back-btn-mobile" onClick={() => setActiveChat(null)}>←</button>
-              <img className="header-avatar" src={activeChat.type === 'group' ? 'https://api.dicebear.com/7.x/identicon/svg?seed=global' : (activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`)} alt="chat-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+              {activeChat.type === 'group' ? (
+                <div className="header-avatar group-header-avatar" aria-label="Global Group avatar">🌐</div>
+              ) : (
+                <img className="header-avatar" src={activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`} alt="chat-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+              )}
               <div className="header-details">
                 <h3>{activeChat.name}</h3>
                 <p className="sub-header-info">{activeChat.type === 'group' ? 'Public Room Channel' : '● Active'}</p>
@@ -1672,7 +1732,11 @@ function App() {
                               📎 {msg.fileName || 'Download file'}
                             </a>
                           )}
-                          {msg.text && <p style={{ margin: 0, wordBreak: 'break-word' }}>{msg.text}</p>}
+                          {msg.text && (
+                            <p style={{ margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                              {msg.senderId === AI_BOT_ID ? msg.text.replace(/\*\*/g, '') : msg.text}
+                            </p>
+                          )}
                           
                           <div className="msg-time-date-container">
                             <span className="msg-date-tag">{displayDate}</span>
@@ -1725,9 +1789,9 @@ function App() {
                 </div>
               )}
 
-              {activeChat?.type === 'ai' && isAiThinking && (
+              {isAiThinking && (
                 <div className="typing-indicator-bubble">
-                  <span>AI Assistant is thinking</span>
+                  <span>Fi-chan AI is typing</span>
                   <div className="dots-container"><span className="dot"></span><span className="dot"></span><span className="dot"></span></div>
                 </div>
               )}
@@ -1805,20 +1869,25 @@ function App() {
                   {/* AI Assistant Button */}
                   <button
                     type="button"
-                    className="chat-action-btn"
+                    className="chat-action-btn ai-action-btn"
                     onClick={() => {
-                      const prompt = typedMessage.trim();
-                      if (!prompt) return;
-                      sendAiReply(prompt, activeChat);
+                      setTypedMessage((currentText) => {
+                        const trimmedText = currentText.trimStart();
+                        return trimmedText.toLowerCase().startsWith('@ai')
+                          ? currentText
+                          : `@ai ${currentText}`;
+                      });
                     }}
-                    title="Ask AI"
-                    aria-label="Ask AI"
+                    title="Mention AI"
+                    aria-label="Mention AI"
                   >
-                    🤖
+                    <LineIcon name="bot" />
                   </button>
                   
                   {/* File Button */}
-                  <label htmlFor="image-input" className="chat-action-btn">📁</label>
+                  <label htmlFor="image-input" className="chat-action-btn" title="Attach File" aria-label="Attach File">
+                    <LineIcon name="paperclip" />
+                  </label>
                   <input 
                     type="file" 
                     accept="*/*"
@@ -1835,7 +1904,7 @@ function App() {
                       onClick={handleStartGameClick} 
                       title="Play Game"
                     >
-                      🎮
+                      <LineIcon name="gamepad" />
                     </button>
 
                   {/* Voice Mic Button */}
@@ -1845,7 +1914,7 @@ function App() {
                     onClick={startRecording}
                     title="Record Voice Message"
                   >
-                    🎙️
+                    <LineIcon name="mic" />
                   </button>
 
                   {/* Message Input */}
@@ -1857,8 +1926,8 @@ function App() {
                   />
                   
                   {/* Send Button */}
-                  <button type="submit" className="send-rocket-btn">
-                    {editMsg ? "✅" : "🚀"}
+                  <button type="submit" className="send-rocket-btn" title={editMsg ? 'Save message' : 'Send message'} aria-label={editMsg ? 'Save message' : 'Send message'}>
+                    {editMsg ? "✓" : <LineIcon name="send" size={18} />}
                   </button>
                 </form>
               )}
@@ -1894,6 +1963,14 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showGamesLobby && (
+        <GamesLobby
+          onClose={() => setShowGamesLobby(false)}
+          onInvite={sendGameInvite}
+          onQuickPlay={handleQuickPlay}
+        />
       )}
 
       {showProfileModal && (
@@ -1937,7 +2014,7 @@ function App() {
       <div style={{ fontSize: '40px', marginBottom: '10px' }}>🎮</div>
       <h3>Game Challenge!</h3>
       <p className="modal-bio">
-        <strong>@{gameInvite.senderName}</strong> wants to play Tic-Tac-Toe with you!
+        <strong>@{gameInvite.senderName}</strong> wants to play {gameInvite.gameName || 'a game'} with you!
       </p>
       <div className="modal-actions-row">
         <button className="popup-msg-btn" onClick={handleAcceptInvite}>
