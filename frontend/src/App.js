@@ -48,10 +48,19 @@ const LineIcon = ({ name, size = 19 }) => {
 
 const getBackendBaseUrl = () => {
   const configured = process.env.REACT_APP_BACKEND_URL?.trim();
-  if (configured) return configured.replace(/\/$/, '');
+  const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocalBrowser = browserHost === 'localhost' || browserHost === '127.0.0.1';
 
-  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+  if (configured && !(isLocalBrowser && configured.includes('localhost'))) {
+    return configured.replace(/\/$/, '');
+  }
+
+  if (typeof window !== 'undefined' && isLocalBrowser) {
     return 'http://localhost:5000';
+  }
+
+  if (typeof window !== 'undefined' && window.location.port === '3000') {
+    return `${window.location.protocol}//${browserHost}:5000`;
   }
 
   return 'https://fi-chan-chat.onrender.com';
