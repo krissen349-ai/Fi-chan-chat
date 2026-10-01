@@ -68,7 +68,11 @@ const getBackendBaseUrl = () => {
 
 const getSocketBaseUrl = () => {
   const configured = process.env.REACT_APP_SOCKET_URL?.trim();
-  if (configured) return configured.replace(/\/$/, '');
+  const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocalBrowser = browserHost === 'localhost' || browserHost === '127.0.0.1';
+  if (configured && !(configured.includes('localhost') && !isLocalBrowser)) {
+    return configured.replace(/\/$/, '');
+  }
   return getBackendBaseUrl();
 };
 
@@ -169,6 +173,33 @@ function App() {
     });
 
     return () => unsubscribe();
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const unsubscribe = onSnapshot(collection(db, 'groups'), (snapshot) => {
+      const savedGroups = snapshot.docs.map(groupDoc => ({ id: groupDoc.id, ...groupDoc.data() }));
+      setGroupsList(previousGroups => {
+        const groupMap = new Map(previousGroups.map(group => [group.id, group]));
+        savedGroups.forEach(group => groupMap.set(group.id, group));
+        return Array.from(groupMap.values());
+      });
+    }, (error) => console.error('Groups snapshot error:', error));
+
+    return () => unsubscribe();
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !auth.currentUser) return;
+
+    const publishPresence = () => setDoc(doc(db, 'users', auth.currentUser.uid), {
+      lastSeen: Date.now()
+    }, { merge: true }).catch(error => console.warn('Presence update failed:', error));
+
+    publishPresence();
+    const heartbeat = window.setInterval(publishPresence, 30000);
+    return () => window.clearInterval(heartbeat);
   }, [isLoggedIn]);
   
   const [activeChat, setActiveChatState] = useState(null); 
@@ -508,7 +539,13 @@ function App() {
       if (me) setCurrentUser(prev => ({ ...prev, ...me }));
     };
 
-    const handleGroupsUpdate = (data) => setGroupsList(data);
+    const handleGroupsUpdate = (data) => {
+      setGroupsList(previousGroups => {
+        const groupMap = new Map(previousGroups.map(group => [group.id, group]));
+        data.forEach(group => groupMap.set(group.id, group));
+        return Array.from(groupMap.values());
+      });
+    };
 
     const handleReceiveMessage = (data) => {
       if (data.message.senderId !== auth.currentUser?.uid &&
@@ -1182,9 +1219,23 @@ function App() {
   const handleCreateGroup = (e) => {
     e.preventDefault();
     if (!newGroupName.trim()) return;
-    socket.emit('create_group', { name: newGroupName, description: "Public Session Room" });
-    setNewGroupName('');
-    setShowNewGroupModal(false);
+
+    const groupId = `group-${Date.now()}`;
+    const groupData = {
+      name: newGroupName.trim(),
+      description: 'Public Session Room',
+      createdBy: currentUser?.username || 'User',
+      createdByUid: auth.currentUser?.uid || null,
+      createdAt: Date.now()
+    };
+
+    setDoc(doc(db, 'groups', groupId), groupData)
+      .then(() => {
+        socket.emit('create_group', { id: groupId, ...groupData });
+        setNewGroupName('');
+        setShowNewGroupModal(false);
+      })
+      .catch(error => alert(`Group create failed: ${error.message}`));
   };
 
   const saveProfileEdit = async () => {
@@ -1586,7 +1637,8 @@ function App() {
                 <p className="empty-msg">No other users online or registered yet.</p>
               ) : (
                 (allRegisteredUsers.length > 0 ? allRegisteredUsers : usersList).map(user => {
-                  const isOnline = usersList.some(u => u.uid === user.uid || u.id === user.id);
+                  const recentlySeen = Number.isFinite(user.lastSeen) && Date.now() - user.lastSeen < 90000;
+                  const isOnline = usersList.some(u => u.uid === user.uid || u.id === user.id) || recentlySeen;
 
                   return (
                     <div 

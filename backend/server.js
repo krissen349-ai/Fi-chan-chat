@@ -444,10 +444,12 @@ io.on('connection', (socket) => {
 
     socket.on('create_group', (data) => {
         const newGroup = {
-            id: `group-${Date.now()}`,
+            id: typeof data.id === 'string' && data.id.length < 100 ? data.id : `group-${Date.now()}`,
             name: data.name,
             description: data.description || "Public Session Group",
-            createdBy: users[socket.id]?.username || "User"
+            createdBy: data.createdBy || users[socket.id]?.username || "User",
+            createdByUid: data.createdByUid || users[socket.id]?.uid || null,
+            createdAt: data.createdAt || Date.now()
         };
         groups.push(newGroup);
         io.emit('update_groups', groups);
