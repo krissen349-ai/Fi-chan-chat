@@ -50,8 +50,9 @@ const getBackendBaseUrl = () => {
   const configured = process.env.REACT_APP_BACKEND_URL?.trim();
   const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
   const isLocalBrowser = browserHost === 'localhost' || browserHost === '127.0.0.1';
+  const isConfiguredLocalUrl = configured && (configured.includes('localhost') || configured.includes('127.0.0.1'));
 
-  if (configured && !(isLocalBrowser && configured.includes('localhost'))) {
+  if (configured && (!isConfiguredLocalUrl || isLocalBrowser)) {
     return configured.replace(/\/$/, '');
   }
 
@@ -70,7 +71,8 @@ const getSocketBaseUrl = () => {
   const configured = process.env.REACT_APP_SOCKET_URL?.trim();
   const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
   const isLocalBrowser = browserHost === 'localhost' || browserHost === '127.0.0.1';
-  if (configured && !(configured.includes('localhost') && !isLocalBrowser)) {
+  const isConfiguredLocalUrl = configured && (configured.includes('localhost') || configured.includes('127.0.0.1'));
+  if (configured && (!isConfiguredLocalUrl || isLocalBrowser)) {
     return configured.replace(/\/$/, '');
   }
   return getBackendBaseUrl();
@@ -1170,13 +1172,15 @@ function App() {
   const sendGameInvite = (game) => {
     const targetUserId = activeChat?.userObj?.uid || activeChat?.userObj?.id;
     if (!targetUserId) return alert('This chat partner is not available for a game invite.');
+    const gameRoomId = `game_${activeChat.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     socket.emit('send_game_invite', {
       toUserId: targetUserId,
       senderName: currentUser?.username || 'Friend',
       chatId: activeChat.id,
       gameId: game.id,
-      gameName: game.name
+      gameName: game.name,
+      gameRoomId
     });
     setShowGamesLobby(false);
     alert(`${game.name} invite sent! 🎮`);
@@ -1193,7 +1197,8 @@ function App() {
       chatId: gameInvite.chatId,
       fromUserId: gameInvite.fromUserId,
       gameId: gameInvite.gameId,
-      gameName: gameInvite.gameName
+      gameName: gameInvite.gameName,
+      gameRoomId: gameInvite.gameRoomId
     });
     setGameInvite(null);
   };
@@ -2093,6 +2098,7 @@ function App() {
 {gameSession && (
   <GameModal
     socket={socket}
+    activeChat={activeChat}
     gameSession={gameSession}
     currentUser={currentUser}
     onClose={() => setGameSession(null)}
