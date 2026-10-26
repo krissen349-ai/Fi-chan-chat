@@ -170,6 +170,9 @@ function createGameState(gameId) {
     if (gameId === 'word-chain') {
         return { gameId, words: [], currentPlayer: 0, winner: null };
     }
+    if (gameId === 'tank-battle') {
+        return { gameId, scores: { p1: 0, p2: 0 }, winner: null };
+    }
     return { gameId: 'tic-tac-toe', board: Array(9).fill(null), currentPlayer: 0, winner: null };
 }
 
@@ -285,7 +288,6 @@ io.on('connection', (socket) => {
     
     // 1. Send Game Invite
     socket.on('send_game_invite', ({ toUserId, senderName, chatId, gameId, gameName, gameRoomId }) => {
-        // Target socket ya UID ko invite bhejo
         io.to(toUserId).emit('receive_game_invite', {
             fromUserId: socket.id,
             senderName: senderName || 'Friend',
@@ -296,9 +298,19 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 2. Accept Game Invite
+    // 2. Accept Game Invite (Tank Battle & Naye Games Allowed Here)
     socket.on('accept_game_invite', ({ chatId, fromUserId, gameId, gameName, gameRoomId }) => {
-        const allowedGames = ['tic-tac-toe', 'connect-four', 'rock-paper-scissors', 'quiz-battle', 'word-chain'];
+        const allowedGames = [
+            'tic-tac-toe', 
+            'connect-four', 
+            'rock-paper-scissors', 
+            'quiz-battle', 
+            'word-chain',
+            'tank-battle',
+            'penalty-shootout',
+            'stickman-run',
+            'sword-duel'
+        ];
         const selectedGameId = allowedGames.includes(gameId) ? gameId : 'tic-tac-toe';
         const selectedGameName = String(gameName || 'Tic-Tac-Toe').slice(0, 40);
         const roomId = typeof gameRoomId === 'string' && gameRoomId.length < 180
