@@ -367,6 +367,13 @@ io.on('connection', (socket) => {
         if (!game || !action || typeof action.type !== 'string') return;
         const playerIndex = game.players.findIndex(player => player.socketId === socket.id);
         if (playerIndex < 0) return;
+
+        // 🕹️ Tank Battle Real-time Actions Handler (Move & Shoot Sync)
+        if (game.gameId === 'tank-battle' && (action.type === 'tank_move' || action.type === 'tank_shoot')) {
+            socket.to(gameRoomId).emit('game_state', { gameRoomId, action });
+            return;
+        }
+
         if (action.type === 'restart') {
             game.state = createGameState(game.gameId);
             io.to(gameRoomId).emit('game_state', { gameRoomId, ...getGamePublicState(game) });
