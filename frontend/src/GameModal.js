@@ -32,6 +32,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const [tankScores, setTankScores] = useState({ p1: 0, p2: 0 });
 
   const canvasRef = useRef(null);
+  const tankWrapRef = useRef(null);
 
   const gameId = gameSession?.gameId || 'tic-tac-toe';
   const roomId = gameSession?.gameRoomId;
@@ -71,6 +72,18 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       socket.off('game_session_missing', handleMissingSession);
     };
   }, [socket, roomId, playerIndex]);
+
+  const toggleFullScreen = () => {
+    const elem = tankWrapRef.current;
+    if (!elem) return;
+    if (!document.fullscreenElement) {
+      elem.requestFullscreen?.().catch(err => {
+        console.error("Fullscreen error:", err.message);
+      });
+    } else {
+      document.exitFullscreen?.();
+    }
+  };
 
 
   /* ==========================================================
@@ -112,18 +125,23 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.maxHealth = 100;
         this.health = 100;
         this.isMe = isMe;
+        this.lastTurretRotate = Date.now();
       }
 
       update() {
-        if (!this.isMe) return; // Sirf apna tank control hoga
+        if (!this.isMe) return;
+
+        // Turret automatic 180 degree rotation every 3 seconds
+        if (Date.now() - this.lastTurretRotate > 3000) {
+          this.turretAngle += Math.PI;
+          this.lastTurretRotate = Date.now();
+        }
 
         let moved = false;
         const controls = playerIndex === 0 ? {
-          forward: 'w', backward: 's', left: 'a', right: 'd',
-          turretLeft: 'q', turretRight: 'e', shoot: ' '
+          forward: 'w', backward: 's', left: 'a', right: 'd', shoot: ' '
         } : {
-          forward: 'ArrowUp', backward: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
-          turretLeft: 'o', turretRight: 'p', shoot: 'Enter'
+          forward: 'ArrowUp', backward: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', shoot: 'Enter'
         };
 
         if (keys[controls.forward] || keys['touch_forward']) {
@@ -139,8 +157,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
         if (keys[controls.left] || keys['touch_left']) { this.angle -= this.rotSpeed; moved = true; }
         if (keys[controls.right] || keys['touch_right']) { this.angle += this.rotSpeed; moved = true; }
-        if (keys[controls.turretLeft] || keys['touch_turretLeft']) { this.turretAngle -= this.rotSpeed; moved = true; }
-        if (keys[controls.turretRight] || keys['touch_turretRight']) { this.turretAngle += this.rotSpeed; moved = true; }
 
         if (this.cooldown > 0) this.cooldown--;
         
@@ -468,38 +484,32 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   };
 
   const renderTankBattle = () => (
-    <div className="mini-game-content tank-battle-wrap">
+    <div className="mini-game-content tank-battle-wrap" ref={tankWrapRef}>
       <div className="tank-score-board">
         <span className="p1-score">Blue (P1): {tankScores.p1}</span>
         <span className="p2-score">Red (P2): {tankScores.p2}</span>
       </div>
+      
       <div className="canvas-container">
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
       </div>
 
-      {/* Mobile Touch Control Virtual D-Pad */}
+      {/* Full Screen Mode Button */}
+      <button className="fullscreen-btn" onClick={toggleFullScreen}>
+        📺 Full Screen Mode
+      </button>
+
+      {/* Mobile Touch Controls (Movement & Fire Only) */}
       <div className="mobile-tank-controls">
-        <div className="control-group">
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_turretLeft', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_turretLeft', false)}
-            onMouseDown={() => window.setTouchKey('touch_turretLeft', true)}
-            onMouseUp={() => window.setTouchKey('touch_turretLeft', false)}
-          >🔄 Gun ↺</button>
+        <div className="control-row">
           <button 
             onTouchStart={() => window.setTouchKey('touch_forward', true)} 
             onTouchEnd={() => window.setTouchKey('touch_forward', false)}
             onMouseDown={() => window.setTouchKey('touch_forward', true)}
             onMouseUp={() => window.setTouchKey('touch_forward', false)}
           >⬆️ Forward</button>
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_turretRight', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_turretRight', false)}
-            onMouseDown={() => window.setTouchKey('touch_turretRight', true)}
-            onMouseUp={() => window.setTouchKey('touch_turretRight', false)}
-          >🔄 Gun ↻</button>
         </div>
-        <div className="control-group">
+        <div className="control-row middle-row">
           <button 
             onTouchStart={() => window.setTouchKey('touch_left', true)} 
             onTouchEnd={() => window.setTouchKey('touch_left', false)}
@@ -519,7 +529,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             onMouseUp={() => window.setTouchKey('touch_right', false)}
           >➡️ Right</button>
         </div>
-        <div className="control-group fire-group">
+        <div className="control-row">
           <button 
             className="fire-btn-touch"
             onTouchStart={() => window.setTouchKey('touch_shoot', true)} 
@@ -531,7 +541,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       </div>
 
       <p className="tank-controls-tip">
-        {playerIndex === 0 ? "👉 Controls: WASD to Move | Q/E to Turn Gun | Space to Shoot" : "👉 Controls: Arrow Keys to Move | O/P to Turn Gun | Enter to Shoot"}
+        {playerIndex === 0 ? "👉 Controls: WASD to Move | Space to Shoot (Turret auto-rotates every 3s)" : "👉 Controls: Arrow Keys to Move | Enter to Shoot (Turret auto-rotates every 3s)"}
       </p>
     </div>
   );
