@@ -2,11 +2,18 @@ import React from 'react';
 import './GameModal.css';
 
 const GAMES = [
+  // Purane 5 Games
   { id: 'tic-tac-toe', icon: '⭕', name: 'Tic-Tac-Toe', description: 'Classic three-in-a-row duel' },
   { id: 'connect-four', icon: '🔴', name: 'Connect Four', description: 'Drop four discs in a row' },
   { id: 'rock-paper-scissors', icon: '✊', name: 'Rock Paper Scissors', description: 'Quick best-of-three battle' },
   { id: 'quiz-battle', icon: '🧠', name: 'Quiz Battle', description: 'Race to the right answers' },
-  { id: 'word-chain', icon: '🔤', name: 'Word Chain', description: 'Keep the word game going' }
+  { id: 'word-chain', icon: '🔤', name: 'Word Chain', description: 'Keep the word game going' },
+  
+  // Stickman Party Style Naye 4 Games
+  { id: 'tank-battle', icon: '🕹️', name: 'Tank Battle', description: '1v1 tank showdown & tactical blasts' },
+  { id: 'penalty-shootout', icon: '🥅', name: 'Penalty Shootout', description: 'Goal scorer duel: strike or save' },
+  { id: 'stickman-run', icon: '🏃', name: 'Stickman Run', description: 'Fast-paced dash to the finish line' },
+  { id: 'sword-duel', icon: '🗡️', name: 'Stick Sword Duel', description: 'Physics-based quick sword fight' }
 ];
 
 const GamesLobby = ({ onClose, onInvite, onQuickPlay }) => (

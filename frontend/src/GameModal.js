@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './GameModal.css';
 
 const QUIZ_QUESTIONS = [
@@ -14,7 +14,8 @@ const GAME_DETAILS = {
   'connect-four': { icon: '🔴', name: 'Connect Four' },
   'rock-paper-scissors': { icon: '✊', name: 'Rock Paper Scissors' },
   'quiz-battle': { icon: '🧠', name: 'Quiz Battle' },
-  'word-chain': { icon: '🔤', name: 'Word Chain' }
+  'word-chain': { icon: '🔤', name: 'Word Chain' },
+  'tank-battle': { icon: '🕹️', name: 'Tank Battle' }
 };
 
 const CHOICES = [
@@ -28,6 +29,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const [wordInput, setWordInput] = useState('');
   const [actionError, setActionError] = useState('');
   const [localChoiceSent, setLocalChoiceSent] = useState(false);
+  const [tankScores, setTankScores] = useState({ p1: 0, p2: 0 });
+
+  const canvasRef = useRef(null);
 
   const gameId = gameSession?.gameId || 'tic-tac-toe';
   const roomId = gameSession?.gameRoomId;
@@ -68,6 +72,271 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     };
   }, [socket, roomId, playerIndex]);
 
+
+  /* ==========================================================
+     ================ TANK BATTLE ENGINE SECTION ==============
+     ========================================================== */
+  useEffect(() => {
+    if (gameId !== 'tank-battle') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    let animationFrameId;
+    let keys = {};
+    let bullets = [];
+    let particles = [];
+    let barriers = [
+      { x: 200, y: 150, w: 50, h: 180 },
+      { x: 550, y: 180, w: 50, h: 180 },
+      { x: 340, y: 210, w: 120, h: 70 }
+    ];
+
+    const handleKeyDown = (e) => { keys[e.key] = true; };
+    const handleKeyUp = (e) => { keys[e.key] = false; };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    class Tank {
+      constructor(x, y, color, angle, isMe) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.size = 30;
+        this.angle = angle;
+        this.turretAngle = 0;
+        this.speed = 2.5;
+        this.rotSpeed = 0.04;
+        this.cooldown = 0;
+        this.maxHealth = 100;
+        this.health = 100;
+        this.isMe = isMe;
+      }
+
+      update() {
+        if (!this.isMe) return; // Sirf apna tank control hoga
+
+        let moved = false;
+        const controls = playerIndex === 0 ? {
+          forward: 'w', backward: 's', left: 'a', right: 'd',
+          turretLeft: 'q', turretRight: 'e', shoot: ' '
+        } : {
+          forward: 'ArrowUp', backward: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+          turretLeft: 'o', turretRight: 'p', shoot: 'Enter'
+        };
+
+        if (keys[controls.forward] || keys['touch_forward']) {
+          let nextX = this.x + Math.cos(this.angle) * this.speed;
+          let nextY = this.y + Math.sin(this.angle) * this.speed;
+          if (!this.checkWallCollision(nextX, nextY)) { this.x = nextX; this.y = nextY; moved = true; }
+        }
+        if (keys[controls.backward] || keys['touch_backward']) {
+          let nextX = this.x - Math.cos(this.angle) * this.speed;
+          let nextY = this.y - Math.sin(this.angle) * this.speed;
+          if (!this.checkWallCollision(nextX, nextY)) { this.x = nextX; this.y = nextY; moved = true; }
+        }
+
+        if (keys[controls.left] || keys['touch_left']) { this.angle -= this.rotSpeed; moved = true; }
+        if (keys[controls.right] || keys['touch_right']) { this.angle += this.rotSpeed; moved = true; }
+        if (keys[controls.turretLeft] || keys['touch_turretLeft']) { this.turretAngle -= this.rotSpeed; moved = true; }
+        if (keys[controls.turretRight] || keys['touch_turretRight']) { this.turretAngle += this.rotSpeed; moved = true; }
+
+        if (this.cooldown > 0) this.cooldown--;
+        
+        if ((keys[controls.shoot] || keys['touch_shoot']) && this.cooldown === 0) {
+          let totalAngle = this.angle + this.turretAngle;
+          const bulletData = {
+            x: this.x + Math.cos(totalAngle) * 25,
+            y: this.y + Math.sin(totalAngle) * 25,
+            vx: Math.cos(totalAngle) * 6,
+            vy: Math.sin(totalAngle) * 6
+          };
+          bullets.push({ ...bulletData, ownerIndex: playerIndex });
+          
+          if (socket && roomId) {
+            socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
+          }
+          this.cooldown = 30;
+        }
+
+        this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
+        this.y = Math.max(this.size, Math.min(canvas.height - this.size, this.y));
+
+        if (moved && socket && roomId) {
+          socket.emit('game_action', {
+            gameRoomId: roomId,
+            action: { type: 'tank_move', x: this.x, y: this.y, angle: this.angle, turretAngle: this.turretAngle, playerIndex }
+          });
+        }
+      }
+
+      checkWallCollision(nx, ny) {
+        if (nx < this.size || nx > canvas.width - this.size || ny < this.size || ny > canvas.height - this.size) return true;
+        for (let b of barriers) {
+          if (nx + this.size/2 > b.x && nx - this.size/2 < b.x + b.w &&
+              ny + this.size/2 > b.y && ny - this.size/2 < b.y + b.h) return true;
+        }
+        return false;
+      }
+
+      draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        ctx.fillStyle = '#c0392b';
+        ctx.fillRect(-20, -this.size - 10, 40, 5);
+        ctx.fillStyle = '#2ecc71';
+        ctx.fillRect(-20, -this.size - 10, (this.health / this.maxHealth) * 40, 5);
+
+        ctx.rotate(this.angle);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(-this.size/2 - 2, -this.size/2, this.size + 4, 6);
+        ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 6);
+
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8);
+
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(-2, 0, 4, 0, Math.PI * 2);
+        ctx.moveTo(-6, 0); ctx.lineTo(4, 0);
+        ctx.stroke();
+
+        ctx.rotate(this.turretAngle);
+        ctx.fillStyle = '#111';
+        ctx.fillRect(-6, -6, 12, 12);
+        ctx.fillRect(0, -3, 22, 6);
+
+        ctx.restore();
+      }
+    }
+
+    const p1 = new Tank(100, 250, '#3498db', 0, playerIndex === 0);
+    const p2 = new Tank(700, 250, '#e74c3c', Math.PI, playerIndex === 1);
+
+    const handleRemoteAction = (data) => {
+      const { action } = data;
+      if (!action) return;
+      if (action.type === 'tank_move' && action.playerIndex !== playerIndex) {
+        const target = action.playerIndex === 0 ? p1 : p2;
+        target.x = action.x;
+        target.y = action.y;
+        target.angle = action.angle;
+        target.turretAngle = action.turretAngle;
+      }
+      if (action.type === 'tank_shoot' && action.playerIndex !== playerIndex) {
+        bullets.push({ ...action.bullet, ownerIndex: action.playerIndex });
+      }
+    };
+    socket.on('game_state', handleRemoteAction);
+
+    const createExplosion = (x, y, color) => {
+      for (let i = 0; i < 15; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 5,
+          vy: (Math.random() - 0.5) * 5,
+          radius: Math.random() * 3 + 2,
+          alpha: 1,
+          color
+        });
+      }
+    };
+
+    const gameLoop = () => {
+      ctx.fillStyle = '#27ae60';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (let b of barriers) {
+        ctx.fillStyle = '#7f8c8d';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = '#34495e';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+      }
+
+      p1.update();
+      p2.update();
+      p1.draw();
+      p2.draw();
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+
+        if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        let hit = false;
+        for (let wall of barriers) {
+          if (b.x > wall.x && b.x < wall.x + wall.w && b.y > wall.y && b.y < wall.y + wall.h) {
+            createExplosion(b.x, b.y, '#7f8c8d');
+            bullets.splice(i, 1);
+            hit = true;
+            break;
+          }
+        }
+        if (hit) continue;
+
+        if (b.ownerIndex === 0 && Math.hypot(b.x - p2.x, b.y - p2.y) < p2.size / 2) {
+          createExplosion(p2.x, p2.y, '#e74c3c');
+          bullets.splice(i, 1);
+          p2.health -= 25;
+          if (p2.health <= 0) {
+            setTankScores(prev => ({ ...prev, p1: prev.p1 + 1 }));
+            p1.health = 100; p2.health = 100;
+            p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
+          }
+        } else if (b.ownerIndex === 1 && Math.hypot(b.x - p1.x, b.y - p1.y) < p1.size / 2) {
+          createExplosion(p1.x, p1.y, '#3498db');
+          bullets.splice(i, 1);
+          p1.health -= 25;
+          if (p1.health <= 0) {
+            setTankScores(prev => ({ ...prev, p2: prev.p2 + 1 }));
+            p1.health = 100; p2.health = 100;
+            p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
+          }
+        } else {
+          ctx.fillStyle = '#f1c40f';
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.alpha -= 0.03;
+        if (p.alpha <= 0) { particles.splice(i, 1); continue; }
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      animationFrameId = requestAnimationFrame(gameLoop);
+    };
+
+    animationFrameId = requestAnimationFrame(gameLoop);
+    window.setTouchKey = (key, isDown) => { keys[key] = isDown; };
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      socket.off('game_state', handleRemoteAction);
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [gameId, playerIndex, socket, roomId]);
+  /* ========================================================== */
+
   const sendAction = (action) => {
     if (!roomId) return;
     setActionError('');
@@ -75,17 +344,18 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   };
 
   const getStatus = () => {
-    if (!gameState) return 'Setting up game...';
-    if (gameState.winner === 'DRAW') return 'Draw game! 🤝';
-    if (gameState.winner !== null && gameState.winner !== undefined) {
+    if (!gameState && gameId !== 'tank-battle') return 'Setting up game...';
+    if (gameId === 'tank-battle') return 'Tank Battle Arena Active 🎮';
+    if (gameState?.winner === 'DRAW') return 'Draw game! 🤝';
+    if (gameState?.winner !== null && gameState?.winner !== undefined) {
       if (typeof gameState.winner === 'number') return gameState.winner === playerIndex ? 'You won! 🎉' : 'Opponent won!';
       return gameState.winner === mySymbol ? 'You won! 🎉' : 'Opponent won!';
     }
-    if (gameId === 'rock-paper-scissors' && gameState.roundComplete) return 'Round complete!';
-    if (gameId === 'quiz-battle' && gameState.roundComplete) return 'Answers are in!';
+    if (gameId === 'rock-paper-scissors' && gameState?.roundComplete) return 'Round complete!';
+    if (gameId === 'quiz-battle' && gameState?.roundComplete) return 'Answers are in!';
     if (gameId === 'rock-paper-scissors' && localChoiceSent) return 'Waiting for opponent...';
-    if (gameId === 'quiz-battle' && gameState.answered?.[playerIndex]) return 'Answer locked. Waiting for opponent...';
-    if (gameState.currentPlayer !== undefined) return gameState.currentPlayer === playerIndex ? 'Your turn' : "Opponent's turn";
+    if (gameId === 'quiz-battle' && gameState?.answered?.[playerIndex]) return 'Answer locked. Waiting for opponent...';
+    if (gameState?.currentPlayer !== undefined) return gameState.currentPlayer === playerIndex ? 'Your turn' : "Opponent's turn";
     return 'Game on!';
   };
 
@@ -197,13 +467,83 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     );
   };
 
+  const renderTankBattle = () => (
+    <div className="mini-game-content tank-battle-wrap">
+      <div className="tank-score-board">
+        <span className="p1-score">Blue (P1): {tankScores.p1}</span>
+        <span className="p2-score">Red (P2): {tankScores.p2}</span>
+      </div>
+      <div className="canvas-container">
+        <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
+      </div>
+
+      {/* Mobile Touch Control Virtual D-Pad */}
+      <div className="mobile-tank-controls">
+        <div className="control-group">
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_turretLeft', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_turretLeft', false)}
+            onMouseDown={() => window.setTouchKey('touch_turretLeft', true)}
+            onMouseUp={() => window.setTouchKey('touch_turretLeft', false)}
+          >🔄 Gun ↺</button>
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_forward', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_forward', false)}
+            onMouseDown={() => window.setTouchKey('touch_forward', true)}
+            onMouseUp={() => window.setTouchKey('touch_forward', false)}
+          >⬆️ Forward</button>
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_turretRight', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_turretRight', false)}
+            onMouseDown={() => window.setTouchKey('touch_turretRight', true)}
+            onMouseUp={() => window.setTouchKey('touch_turretRight', false)}
+          >🔄 Gun ↻</button>
+        </div>
+        <div className="control-group">
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_left', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_left', false)}
+            onMouseDown={() => window.setTouchKey('touch_left', true)}
+            onMouseUp={() => window.setTouchKey('touch_left', false)}
+          >⬅️ Left</button>
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_backward', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_backward', false)}
+            onMouseDown={() => window.setTouchKey('touch_backward', true)}
+            onMouseUp={() => window.setTouchKey('touch_backward', false)}
+          >⬇️ Back</button>
+          <button 
+            onTouchStart={() => window.setTouchKey('touch_right', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_right', false)}
+            onMouseDown={() => window.setTouchKey('touch_right', true)}
+            onMouseUp={() => window.setTouchKey('touch_right', false)}
+          >➡️ Right</button>
+        </div>
+        <div className="control-group fire-group">
+          <button 
+            className="fire-btn-touch"
+            onTouchStart={() => window.setTouchKey('touch_shoot', true)} 
+            onTouchEnd={() => window.setTouchKey('touch_shoot', false)}
+            onMouseDown={() => window.setTouchKey('touch_shoot', true)}
+            onMouseUp={() => window.setTouchKey('touch_shoot', false)}
+          >🔥 FIRE!</button>
+        </div>
+      </div>
+
+      <p className="tank-controls-tip">
+        {playerIndex === 0 ? "👉 Controls: WASD to Move | Q/E to Turn Gun | Space to Shoot" : "👉 Controls: Arrow Keys to Move | O/P to Turn Gun | Enter to Shoot"}
+      </p>
+    </div>
+  );
+
   const renderGame = () => {
-    if (!gameState) return <p className="game-instruction">Waiting for the game session...</p>;
+    if (!gameState && gameId !== 'tank-battle') return <p className="game-instruction">Waiting for the game session...</p>;
     switch (gameId) {
       case 'connect-four': return renderConnectFour();
       case 'rock-paper-scissors': return renderRps();
       case 'quiz-battle': return renderQuiz();
       case 'word-chain': return renderWordChain();
+      case 'tank-battle': return renderTankBattle();
       default: return renderTicTacToe();
     }
   };
@@ -218,7 +558,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
         <div className="game-status-bar">
           <p>{getStatus()}</p>
-          <span className="symbol-badge">{gameId === 'quiz-battle' || gameId === 'rock-paper-scissors' ? `You: ${playerIndex === 0 ? 'P1' : 'P2'}` : `You: ${mySymbol}`}</span>
+          <span className="symbol-badge">{gameId === 'quiz-battle' || gameId === 'rock-paper-scissors' || gameId === 'tank-battle' ? `You: ${playerIndex === 0 ? 'P1' : 'P2'}` : `You: ${mySymbol}`}</span>
         </div>
 
         {actionError && <p className="game-action-error" role="alert">{actionError}</p>}

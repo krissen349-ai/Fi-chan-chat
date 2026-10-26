@@ -255,3 +255,158 @@
   .games-lobby-card { padding: 16px; border-radius: 18px; }
   .games-grid { grid-template-columns: 1fr; }
 }
+
+/* Tank Battle Greenery & Landscape Layout */
+.tank-battle-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.tank-score-board {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 4px;
+  margin-bottom: 6px;
+}
+
+.p1-score { color: #3498db; }
+.p2-score { color: #e74c3c; }
+
+.canvas-container {
+  width: 100%;
+  max-width: 800px;
+  background-color: #27ae60; /* Greenery turf background */
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  aspect-ratio: 800 / 500;
+}
+
+.tank-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tank-controls-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #cbd5e1;
+  text-align: center;
+}
+
+/* Mobile Screen Automatic Landscape Orientation Rotation */
+@media screen and (max-width: 768px) and (orientation: portrait) {
+  .game-modal-tank-battle {
+    transform: rotate(90deg);
+    transform-origin: center center;
+    width: 90vh !important;
+    height: 90vw !important;
+  }
+}
+
+
+/* Tank Battle Greenery, Landscape & Mobile Touch D-Pad */
+.tank-battle-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.tank-score-board {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 4px;
+  margin-bottom: 6px;
+}
+
+.p1-score { color: #3498db; }
+.p2-score { color: #e74c3c; }
+
+.canvas-container {
+  width: 100%;
+  max-width: 800px;
+  background-color: #27ae60;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  aspect-ratio: 800 / 500;
+}
+
+.tank-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Mobile Touch D-Pad Styles */
+.mobile-tank-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.control-group {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.control-group button {
+  flex: 1;
+  padding: 10px 2px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.control-group button:active {
+  background: rgba(168, 85, 247, 0.6);
+}
+
+.fire-group button {
+  background: #e74c3c;
+  color: white;
+  padding: 10px;
+  font-size: 13px;
+}
+
+.fire-group button:active {
+  background: #c0392b;
+}
+
+.tank-controls-tip {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #cbd5e1;
+  text-align: center;
+}
+
+/* Mobile Screen Automatic Landscape Orientation Rotation */
+@media screen and (max-width: 768px) and (orientation: portrait) {
+  .game-modal-tank-battle {
+    transform: rotate(90deg);
+    transform-origin: center center;
+    width: 90vh !important;
+    height: 90vw !important;
+  }
+}
