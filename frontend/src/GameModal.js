@@ -79,12 +79,27 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const toggleFullScreen = () => {
     const elem = tankWrapRef.current;
     if (!elem) return;
-    if (!document.fullscreenElement) {
-      if (elem.requestFullscreen) elem.requestFullscreen();
-      else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
+      if (requestFn) {
+        requestFn.call(elem).then(() => {
+          if (screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock('landscape').catch(err => {
+              console.log('Orientation lock info:', err);
+            });
+          }
+        }).catch(err => {
+          console.error("Fullscreen error:", err.message);
+        });
+      }
     } else {
-      if (document.exitFullscreen) document.exitFullscreen();
-      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      if (screen.orientation && screen.orientation.unlock) {
+        screen.orientation.unlock();
+      }
+      const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exitFn) {
+        exitFn.call(document);
+      }
     }
   };
 
@@ -291,9 +306,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
     const stickEl = joystickStickRef.current;
     const baseEl = joystickBaseRef.current;
-    const fireEl = fireBtnRef.current;
 
-    /* Multi-Touch Controls Setup */
     const updateJoystickPos = (clientX, clientY) => {
       if (!baseEl || !stickEl) return;
       const rect = baseEl.getBoundingClientRect();
@@ -329,9 +342,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           joystickTouchId = touch.identifier;
           updateJoystickPos(touch.clientX, touch.clientY);
         }
-        if (fireEl && fireEl.contains(touch.target)) {
-          keys['touch_shoot'] = true;
-        }
       }
     };
 
@@ -351,9 +361,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (touch.identifier === joystickTouchId) {
           resetJoystick();
         }
-        if (fireEl && fireEl.contains(touch.target)) {
-          keys['touch_shoot'] = false;
-        }
       }
     };
 
@@ -362,7 +369,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     window.addEventListener('touchend', handleTouchEnd);
     window.addEventListener('touchcancel', handleTouchEnd);
 
-    /* Desktop Fallback Mouse Listener */
     const handleMouseDown = (e) => {
       if (baseEl && baseEl.contains(e.target)) {
         joystickActive = true;
@@ -381,6 +387,10 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     window.addEventListener('mousedown', handleMouseDown);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+
+    window.setTouchKey = (key, isDown) => {
+      keys[key] = isDown;
+    };
 
     const gameLoop = () => {
       ctx.fillStyle = '#27ae60';
@@ -628,6 +638,10 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           ref={fireBtnRef}
           className="fire-btn-floating"
           type="button"
+          onTouchStart={(e) => { e.preventDefault(); if (window.setTouchKey) window.setTouchKey('touch_shoot', true); }}
+          onTouchEnd={(e) => { e.preventDefault(); if (window.setTouchKey) window.setTouchKey('touch_shoot', false); }}
+          onMouseDown={() => { if (window.setTouchKey) window.setTouchKey('touch_shoot', true); }}
+          onMouseUp={() => { if (window.setTouchKey) window.setTouchKey('touch_shoot', false); }}
         >
           🔥 FIRE
         </button>

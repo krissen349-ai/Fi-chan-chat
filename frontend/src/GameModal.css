@@ -271,8 +271,11 @@
   text-align: center;
 }
 
-/* Fullscreen Mode Fixes */
-.tank-battle-wrap:fullscreen {
+/* Fullscreen Mode Landscape Force & Styling */
+:fullscreen .tank-battle-wrap,
+:-webkit-full-screen .tank-battle-wrap {
+  width: 100vw;
+  height: 100vh;
   background: #111827;
   display: flex;
   flex-direction: column;
@@ -281,9 +284,11 @@
   padding: 10px;
 }
 
-.tank-battle-wrap:fullscreen .canvas-container {
-  max-width: 100vw;
-  max-height: 85vh;
+:fullscreen .canvas-container,
+:-webkit-full-screen .canvas-container {
+  max-width: 90vw;
+  max-height: 75vh;
   width: auto;
   height: auto;
+  aspect-ratio: 800 / 500;
 }
