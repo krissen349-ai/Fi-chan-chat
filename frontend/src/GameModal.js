@@ -24,6 +24,59 @@ const CHOICES = [
   { id: 'scissors', icon: '✌️', label: 'Scissors' }
 ];
 
+// Web Audio API Sound Generator
+const createSoundFX = () => {
+  let ctx = null;
+  const init = () => {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  };
+
+  return {
+    playShoot: () => {
+      init();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(300, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+    },
+    playExplosion: () => {
+      init();
+      if (!ctx) return;
+      const bufferSize = ctx.sampleRate * 0.3;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(800, ctx.currentTime);
+      filter.frequency.linearRampToValueAtTime(50, ctx.currentTime + 0.3);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.5, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      noise.start();
+    }
+  };
+};
+
+const soundFX = createSoundFX();
+
 const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) => {
   const [gameState, setGameState] = useState(gameSession?.state || null);
   const [wordInput, setWordInput] = useState('');
@@ -110,18 +163,20 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     let keys = {};
     let bullets = [];
     let particles = [];
+    let trackMarks = []; // Tire tracks fading in 2 seconds
     let barriers = [
-      { x: 200, y: 150, w: 50, h: 180 },
-      { x: 550, y: 180, w: 50, h: 180 },
-      { x: 340, y: 210, w: 120, h: 70 }
+      { x: 180, y: 120, w: 60, h: 220 },
+      { x: 560, y: 160, w: 60, h: 220 },
+      { x: 330, y: 210, w: 140, h: 80 }
     ];
 
     class Tank {
-      constructor(x, y, color, angle, isMe) {
+      constructor(x, y, mainColor, accentColor, angle, isMe) {
         this.x = x;
         this.y = y;
-        this.color = color;
-        this.size = 30;
+        this.mainColor = mainColor;
+        this.accentColor = accentColor;
+        this.size = 32;
         this.angle = angle;
         this.speed = 3.2;
         this.rotSpeed = 0.045; // Smooth continuous 360 rotation speed
@@ -129,6 +184,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.maxHealth = 100;
         this.health = 100;
         this.isMe = isMe;
+        this.muzzleFlash = 0;
       }
 
       update(isHoldingFire) {
@@ -141,6 +197,15 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           let nextX = this.x + Math.cos(this.angle) * this.speed;
           let nextY = this.y + Math.sin(this.angle) * this.speed;
           if (!this.checkWallCollision(nextX, nextY)) {
+            // Drop Tire Tracks
+            trackMarks.push({
+              x: this.x,
+              y: this.y,
+              angle: this.angle,
+              alpha: 0.6,
+              createdAt: Date.now()
+            });
+
             this.x = nextX;
             this.y = nextY;
             moved = true;
@@ -176,33 +241,49 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         ctx.translate(this.x, this.y);
 
         // Health bar
-        ctx.fillStyle = '#c0392b';
-        ctx.fillRect(-20, -this.size - 10, 40, 5);
-        ctx.fillStyle = '#2ecc71';
-        ctx.fillRect(-20, -this.size - 10, (this.health / this.maxHealth) * 40, 5);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(-22, -this.size - 12, 44, 6);
+        ctx.fillStyle = this.health > 40 ? '#10b981' : '#ef4444';
+        ctx.fillRect(-22, -this.size - 12, (this.health / this.maxHealth) * 44, 6);
 
         ctx.rotate(this.angle);
 
         // Tracks
-        ctx.fillStyle = '#333';
-        ctx.fillRect(-this.size/2 - 2, -this.size/2, this.size + 4, 6);
-        ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 6);
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(-this.size/2 - 2, -this.size/2 - 2, this.size + 4, 8);
+        ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 8);
 
         // Tank Body
-        ctx.fillStyle = this.color;
-        ctx.fillRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8);
+        ctx.fillStyle = this.mainColor;
+        ctx.beginPath();
+        ctx.roundRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8, 4);
+        ctx.fill();
 
-        // Tank Barrel (Mundi / Turret combined as part of tank body)
-        ctx.fillStyle = '#111';
-        ctx.fillRect(-6, -6, 12, 12);
-        ctx.fillRect(0, -3, 24, 6);
+        // Inner plate
+        ctx.fillStyle = this.accentColor;
+        ctx.fillRect(-10, -8, 20, 16);
+
+        // Tank Barrel (Mundi)
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, -4, 26, 8);
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(20, -5, 6, 10);
+
+        // Muzzle Flash Effect
+        if (this.muzzleFlash > 0) {
+          ctx.fillStyle = '#f59e0b';
+          ctx.beginPath();
+          ctx.arc(32, 0, 10, 0, Math.PI * 2);
+          ctx.fill();
+          this.muzzleFlash--;
+        }
 
         ctx.restore();
       }
     }
 
-    const p1 = new Tank(100, 250, '#3498db', 0, playerIndex === 0);
-    const p2 = new Tank(700, 250, '#e74c3c', Math.PI, playerIndex === 1);
+    const p1 = new Tank(100, 250, '#0284c7', '#38bdf8', 0, playerIndex === 0);
+    const p2 = new Tank(700, 250, '#dc2626', '#f87171', Math.PI, playerIndex === 1);
 
     const handleRemoteAction = (data) => {
       const { action } = data;
@@ -215,17 +296,19 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       }
       if (action.type === 'tank_shoot' && action.playerIndex !== playerIndex) {
         bullets.push({ ...action.bullet, ownerIndex: action.playerIndex });
+        soundFX.playShoot();
       }
     };
     socket.on('game_state', handleRemoteAction);
 
     const createExplosion = (x, y, color) => {
-      for (let i = 0; i < 15; i++) {
+      soundFX.playExplosion();
+      for (let i = 0; i < 25; i++) {
         particles.push({
           x, y,
-          vx: (Math.random() - 0.5) * 5,
-          vy: (Math.random() - 0.5) * 5,
-          radius: Math.random() * 3 + 2,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8,
+          radius: Math.random() * 4 + 2,
           alpha: 1,
           color
         });
@@ -237,18 +320,21 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       const me = playerIndex === 0 ? p1 : p2;
       if (me.cooldown > 0) return;
       
+      me.muzzleFlash = 4;
+      soundFX.playShoot();
+
       const bulletData = {
-        x: me.x + Math.cos(me.angle) * 28,
-        y: me.y + Math.sin(me.angle) * 28,
-        vx: Math.cos(me.angle) * 7.5,
-        vy: Math.sin(me.angle) * 7.5
+        x: me.x + Math.cos(me.angle) * 30,
+        y: me.y + Math.sin(me.angle) * 30,
+        vx: Math.cos(me.angle) * 8.5,
+        vy: Math.sin(me.angle) * 8.5
       };
       bullets.push({ ...bulletData, ownerIndex: playerIndex });
       
       if (socket && roomId) {
         socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
       }
-      me.cooldown = 18;
+      me.cooldown = 16;
     };
 
     window.setTouchKey = (key, isDown) => {
@@ -256,14 +342,44 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     };
 
     const gameLoop = () => {
-      ctx.fillStyle = '#27ae60';
+      // Background Grid Pattern
+      ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < canvas.width; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+
+      // Draw & Fade Track Marks (2 seconds expiration)
+      const now = Date.now();
+      for (let i = trackMarks.length - 1; i >= 0; i--) {
+        const mark = trackMarks[i];
+        const age = (now - mark.createdAt) / 1000;
+        if (age >= 2) {
+          trackMarks.splice(i, 1);
+          continue;
+        }
+        mark.alpha = 0.5 * (1 - age / 2);
+
+        ctx.save();
+        ctx.translate(mark.x, mark.y);
+        ctx.rotate(mark.angle);
+        ctx.fillStyle = `rgba(0, 0, 0, ${mark.alpha})`;
+        ctx.fillRect(-12, -12, 10, 4);
+        ctx.fillRect(-12, 8, 10, 4);
+        ctx.restore();
+      }
+
       for (let b of barriers) {
-        ctx.fillStyle = '#7f8c8d';
+        ctx.fillStyle = '#334155';
         ctx.fillRect(b.x, b.y, b.w, b.h);
-        ctx.strokeStyle = '#34495e';
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 4;
         ctx.strokeRect(b.x, b.y, b.w, b.h);
       }
 
@@ -291,7 +407,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         let hit = false;
         for (let wall of barriers) {
           if (b.x > wall.x && b.x < wall.x + wall.w && b.y > wall.y && b.y < wall.y + wall.h) {
-            createExplosion(b.x, b.y, '#7f8c8d');
+            createExplosion(b.x, b.y, '#94a3b8');
             bullets.splice(i, 1);
             hit = true;
             break;
@@ -300,7 +416,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (hit) continue;
 
         if (b.ownerIndex === 0 && Math.hypot(b.x - p2.x, b.y - p2.y) < p2.size / 2) {
-          createExplosion(p2.x, p2.y, '#e74c3c');
+          createExplosion(p2.x, p2.y, '#ef4444');
           bullets.splice(i, 1);
           p2.health -= 25;
           if (p2.health <= 0) {
@@ -309,7 +425,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
           }
         } else if (b.ownerIndex === 1 && Math.hypot(b.x - p1.x, b.y - p1.y) < p1.size / 2) {
-          createExplosion(p1.x, p1.y, '#3498db');
+          createExplosion(p1.x, p1.y, '#38bdf8');
           bullets.splice(i, 1);
           p1.health -= 25;
           if (p1.health <= 0) {
@@ -318,11 +434,31 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
           }
         } else {
-          ctx.fillStyle = '#f1c40f';
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = '#f59e0b';
+          ctx.fillStyle = '#fbbf24';
           ctx.beginPath();
-          ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+          ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
           ctx.fill();
+          ctx.shadowBlur = 0;
         }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= 0.03;
+        if (p.alpha <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.alpha;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
       }
 
       animationFrameId = requestAnimationFrame(gameLoop);
@@ -465,7 +601,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       <div className="canvas-container">
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
 
-        {/* Sirf FIRE button bacha hai - Hold karne par tank sidha chalega, Click karne par fire hoga */}
         <button 
           ref={fireBtnRef}
           className="fire-btn-floating"
@@ -492,7 +627,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       </div>
 
       <button className="fullscreen-btn" onClick={toggleFullScreen}>
-        📺 Full Screen Mode
+        📺 Full Screen (Landscape Mode)
       </button>
 
       <p className="tank-controls-tip">

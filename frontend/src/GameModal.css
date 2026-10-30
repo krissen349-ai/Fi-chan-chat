@@ -1,14 +1,14 @@
 .game-modal-card {
-  background: rgba(18, 18, 24, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(15, 15, 22, 0.92);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 24px;
   padding: 24px;
-  width: min(92vw, 480px);
+  width: min(92vw, 520px);
   max-height: 92dvh;
   overflow-y: auto;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(139, 92, 246, 0.15);
   text-align: center;
 }
 
@@ -376,24 +376,35 @@
   display: flex;
   justify-content: space-between;
   width: 100%;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 0 4px;
-  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 8px 14px;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  letter-spacing: 0.5px;
 }
 
-.p1-score { color: #3498db; }
-.p2-score { color: #e74c3c; }
+.p1-score {
+  color: #38bdf8;
+  text-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
+}
+
+.p2-score {
+  color: #f87171;
+  text-shadow: 0 0 10px rgba(248, 113, 113, 0.6);
+}
 
 .canvas-container {
   position: relative;
   width: 100%;
   max-width: 800px;
-  background-color: #27ae60;
-  border-radius: 12px;
+  background-color: #121820;
+  border-radius: 16px;
   overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7), inset 0 0 40px rgba(0, 0, 0, 0.8);
   aspect-ratio: 800 / 500;
   touch-action: none;
 }
@@ -404,55 +415,65 @@
   display: block;
 }
 
-/* Floating Fire Button (Tap to fire, Hold to drive straight) */
+/* Floating Fire Button (High Quality Fire Button) */
 .fire-btn-floating {
   position: absolute;
-  bottom: 20px;
-  right: 20px;
-  width: 82px;
-  height: 82px;
-  background: radial-gradient(circle, #ef4444 0%, #dc2626 100%);
-  border: 3px solid rgba(255, 255, 255, 0.9);
+  bottom: 22px;
+  right: 22px;
+  width: 86px;
+  height: 86px;
+  background: radial-gradient(circle at 30% 30%, #ff5252, #c62828);
+  border: 3px solid rgba(255, 255, 255, 0.95);
   border-radius: 50%;
-  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.5);
+  box-shadow: 0 8px 25px rgba(255, 82, 82, 0.6), inset 0 3px 6px rgba(255, 255, 255, 0.4);
   display: flex;
   justify-content: center;
   align-items: center;
   color: white;
-  font-weight: 800;
-  font-size: 0.95rem;
+  font-weight: 900;
+  font-size: 1.05rem;
+  letter-spacing: 1px;
   z-index: 25;
   cursor: pointer;
   touch-action: none;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
 .fire-btn-floating:active {
-  transform: scale(0.9);
-  background: radial-gradient(circle, #dc2626 0%, #b91c1c 100%);
+  transform: scale(0.92);
+  box-shadow: 0 4px 15px rgba(255, 82, 82, 0.8), inset 0 2px 4px rgba(0, 0, 0, 0.4);
+  background: radial-gradient(circle at 30% 30%, #e53935, #b71c1c);
 }
 
 .fullscreen-btn {
   width: 100%;
-  margin-top: 10px;
-  padding: 11px;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-  border: none;
-  border-radius: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
   color: white;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
   cursor: pointer;
-  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.35);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+  transition: all 0.2s ease;
+}
+
+.fullscreen-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 25px rgba(168, 85, 247, 0.5);
 }
 
 .tank-controls-tip {
-  margin-top: 6px;
-  font-size: 11px;
-  color: #cbd5e1;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #94a3b8;
   text-align: center;
+  font-weight: 600;
 }
 
-/* Fullscreen & Landscape Rotation Styles */
+/* Fullscreen Landscape Mode Styles */
 :fullscreen .tank-battle-wrap,
 :-webkit-full-screen .tank-battle-wrap {
   width: 100vw;
@@ -460,28 +481,28 @@
   position: fixed;
   top: 0;
   left: 0;
-  background: #111827;
+  background: #090d16;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  padding: 0;
+  padding: 10px;
   z-index: 99999;
 }
 
 :fullscreen .canvas-container,
 :-webkit-full-screen .canvas-container {
-  width: 96vw;
-  max-width: 96vw;
+  width: 95vw;
+  max-width: 95vw;
   height: auto;
-  max-height: 85vh;
+  max-height: 88vh;
   aspect-ratio: 800 / 500;
 }
 
 :fullscreen .tank-score-board,
 :-webkit-full-screen .tank-score-board {
-  padding: 0 10px;
-  margin-bottom: 4px;
+  max-width: 95vw;
+  margin-bottom: 6px;
 }
 
 :fullscreen .fullscreen-btn,
