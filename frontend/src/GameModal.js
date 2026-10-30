@@ -33,6 +33,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
   const canvasRef = useRef(null);
   const tankWrapRef = useRef(null);
+  const joystickBaseRef = useRef(null);
+  const joystickStickRef = useRef(null);
 
   const gameId = gameSession?.gameId || 'tic-tac-toe';
   const roomId = gameSession?.gameRoomId;
@@ -105,6 +107,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       { x: 340, y: 210, w: 120, h: 70 }
     ];
 
+    // Joystick State Variables
+    let joystickActive = false;
+    let joystickVector = { x: 0, y: 0 };
+    const joystickMaxRadius = 40;
+
     const handleKeyDown = (e) => { keys[e.key] = true; };
     const handleKeyUp = (e) => { keys[e.key] = false; };
 
@@ -120,7 +127,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.angle = angle;
         this.turretAngle = 0;
         this.speed = 2.5;
-        this.rotSpeed = 0.04;
+        this.rotSpeed = 0.055;
         this.cooldown = 0;
         this.maxHealth = 100;
         this.health = 100;
@@ -144,23 +151,42 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           forward: 'ArrowUp', backward: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', shoot: 'Enter'
         };
 
-        if (keys[controls.forward] || keys['touch_forward']) {
+        if (keys[controls.forward]) {
           let nextX = this.x + Math.cos(this.angle) * this.speed;
           let nextY = this.y + Math.sin(this.angle) * this.speed;
           if (!this.checkWallCollision(nextX, nextY)) { this.x = nextX; this.y = nextY; moved = true; }
         }
-        if (keys[controls.backward] || keys['touch_backward']) {
+        if (keys[controls.backward]) {
           let nextX = this.x - Math.cos(this.angle) * this.speed;
           let nextY = this.y - Math.sin(this.angle) * this.speed;
           if (!this.checkWallCollision(nextX, nextY)) { this.x = nextX; this.y = nextY; moved = true; }
         }
 
-        if (keys[controls.left] || keys['touch_left']) { this.angle -= this.rotSpeed; moved = true; }
-        if (keys[controls.right] || keys['touch_right']) { this.angle += this.rotSpeed; moved = true; }
+        if (keys[controls.left]) { this.angle -= this.rotSpeed; moved = true; }
+        if (keys[controls.right]) { this.angle += this.rotSpeed; moved = true; }
+
+        // Virtual Joystick Controller Movement Handling
+        if (joystickActive) {
+          const joystickAngle = Math.atan2(joystickVector.y, joystickVector.x);
+          const magnitude = Math.hypot(joystickVector.x, joystickVector.y);
+
+          if (magnitude > 0.1) {
+            let angleDiff = joystickAngle - this.angle;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+
+            if (Math.abs(angleDiff) > 0.08) {
+              this.rotate(angleDiff > 0 ? 1 : -1);
+            }
+            this.move(1);
+            moved = true;
+          }
+        }
 
         if (this.cooldown > 0) this.cooldown--;
         
         if ((keys[controls.shoot] || keys['touch_shoot']) && this.cooldown === 0) {
+          keys['touch_shoot'] = false; // Reset touch fire trigger
           let totalAngle = this.angle + this.turretAngle;
           const bulletData = {
             x: this.x + Math.cos(totalAngle) * 25,
@@ -185,6 +211,19 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             action: { type: 'tank_move', x: this.x, y: this.y, angle: this.angle, turretAngle: this.turretAngle, playerIndex }
           });
         }
+      }
+
+      move(dir) {
+        let nextX = this.x + Math.cos(this.angle) * this.speed * dir;
+        let nextY = this.y + Math.sin(this.angle) * this.speed * dir;
+        if (!this.checkWallCollision(nextX, nextY)) {
+          this.x = nextX;
+          this.y = nextY;
+        }
+      }
+
+      rotate(dir) {
+        this.angle += this.rotSpeed * dir;
       }
 
       checkWallCollision(nx, ny) {
@@ -260,6 +299,68 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         });
       }
     };
+
+    // Joystick Touch Listeners Implementation
+    const stickEl = joystickStickRef.current;
+    const baseEl = joystickBaseRef.current;
+
+    const updateJoystickPos = (clientX, clientY) => {
+      if (!baseEl || !stickEl) return;
+      const rect = baseEl.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      let dx = clientX - centerX;
+      let dy = clientY - centerY;
+      const distance = Math.hypot(dx, dy);
+
+      if (distance > joystickMaxRadius) {
+        dx = (dx / distance) * joystickMaxRadius;
+        dy = (dy / distance) * joystickMaxRadius;
+      }
+
+      joystickVector.x = dx / joystickMaxRadius;
+      joystickVector.y = dy / joystickMaxRadius;
+      stickEl.style.transform = `translate(${dx}px, ${dy}px)`;
+    };
+
+    const onTouchStart = (e) => {
+      joystickActive = true;
+      const touch = e.touches[0];
+      updateJoystickPos(touch.clientX, touch.clientY);
+    };
+
+    const onTouchMove = (e) => {
+      if (!joystickActive) return;
+      const touch = e.touches[0];
+      updateJoystickPos(touch.clientX, touch.clientY);
+    };
+
+    const onTouchEnd = () => {
+      joystickActive = false;
+      joystickVector = { x: 0, y: 0 };
+      if (stickEl) stickEl.style.transform = `translate(0px, 0px)`;
+    };
+
+    if (baseEl) {
+      baseEl.addEventListener('touchstart', onTouchStart, { passive: true });
+      window.addEventListener('touchmove', onTouchMove, { passive: true });
+      window.addEventListener('touchend', onTouchEnd);
+      
+      // Mouse fallback for testing on PC
+      baseEl.addEventListener('mousedown', (e) => {
+        joystickActive = true;
+        updateJoystickPos(e.clientX, e.clientY);
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (joystickActive) updateJoystickPos(e.clientX, e.clientY);
+      });
+      window.addEventListener('mouseup', () => {
+        joystickActive = false;
+        joystickVector = { x: 0, y: 0 };
+        if (stickEl) stickEl.style.transform = `translate(0px, 0px)`;
+      });
+    }
 
     const gameLoop = () => {
       ctx.fillStyle = '#27ae60';
@@ -490,8 +591,22 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         <span className="p2-score">Red (P2): {tankScores.p2}</span>
       </div>
       
-      <div className="canvas-container">
+      <div className="canvas-container" style={{ position: 'relative' }}>
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
+
+        {/* Floating Virtual Joystick on Left Side of Canvas */}
+        <div ref={joystickBaseRef} className="joystick-base">
+          <div ref={joystickStickRef} className="joystick-stick"></div>
+        </div>
+
+        {/* Floating Fire Button on Right Side of Canvas */}
+        <button 
+          className="fire-btn-floating"
+          onTouchStart={() => window.setTouchKey('touch_shoot', true)}
+          onMouseDown={() => window.setTouchKey('touch_shoot', true)}
+        >
+          🔥 FIRE
+        </button>
       </div>
 
       {/* Full Screen Mode Button */}
@@ -499,49 +614,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         📺 Full Screen Mode
       </button>
 
-      {/* Mobile Touch Controls (Movement & Fire Only) */}
-      <div className="mobile-tank-controls">
-        <div className="control-row">
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_forward', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_forward', false)}
-            onMouseDown={() => window.setTouchKey('touch_forward', true)}
-            onMouseUp={() => window.setTouchKey('touch_forward', false)}
-          >⬆️ Forward</button>
-        </div>
-        <div className="control-row middle-row">
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_left', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_left', false)}
-            onMouseDown={() => window.setTouchKey('touch_left', true)}
-            onMouseUp={() => window.setTouchKey('touch_left', false)}
-          >⬅️ Left</button>
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_backward', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_backward', false)}
-            onMouseDown={() => window.setTouchKey('touch_backward', true)}
-            onMouseUp={() => window.setTouchKey('touch_backward', false)}
-          >⬇️ Back</button>
-          <button 
-            onTouchStart={() => window.setTouchKey('touch_right', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_right', false)}
-            onMouseDown={() => window.setTouchKey('touch_right', true)}
-            onMouseUp={() => window.setTouchKey('touch_right', false)}
-          >➡️ Right</button>
-        </div>
-        <div className="control-row">
-          <button 
-            className="fire-btn-touch"
-            onTouchStart={() => window.setTouchKey('touch_shoot', true)} 
-            onTouchEnd={() => window.setTouchKey('touch_shoot', false)}
-            onMouseDown={() => window.setTouchKey('touch_shoot', true)}
-            onMouseUp={() => window.setTouchKey('touch_shoot', false)}
-          >🔥 FIRE!</button>
-        </div>
-      </div>
-
       <p className="tank-controls-tip">
-        {playerIndex === 0 ? "👉 Controls: WASD to Move | Space to Shoot (Turret auto-rotates every 3s)" : "👉 Controls: Arrow Keys to Move | Enter to Shoot (Turret auto-rotates every 3s)"}
+        {playerIndex === 0 ? "👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)" : "👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)"}
       </p>
     </div>
   );
