@@ -35,6 +35,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const tankWrapRef = useRef(null);
   const joystickBaseRef = useRef(null);
   const joystickStickRef = useRef(null);
+  const fireBtnRef = useRef(null);
 
   const gameId = gameSession?.gameId || 'tic-tac-toe';
   const roomId = gameSession?.gameRoomId;
@@ -79,11 +80,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     const elem = tankWrapRef.current;
     if (!elem) return;
     if (!document.fullscreenElement) {
-      elem.requestFullscreen?.().catch(err => {
-        console.error("Fullscreen error:", err.message);
-      });
+      if (elem.requestFullscreen) elem.requestFullscreen();
+      else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
     } else {
-      document.exitFullscreen?.();
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
     }
   };
 
@@ -107,6 +108,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     ];
 
     let joystickActive = false;
+    let joystickTouchId = null;
     let joystickVector = { x: 0, y: 0 };
     const joystickMaxRadius = 38;
 
@@ -187,7 +189,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (this.cooldown > 0) this.cooldown--;
         
         if ((keys[controls.shoot] || keys['touch_shoot']) && this.cooldown === 0) {
-          keys['touch_shoot'] = false;
           let totalAngle = this.angle + this.turretAngle;
           const bulletData = {
             x: this.x + Math.cos(totalAngle) * 25,
@@ -200,7 +201,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           if (socket && roomId) {
             socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
           }
-          this.cooldown = 25;
+          this.cooldown = 20;
         }
 
         this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
@@ -290,7 +291,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
     const stickEl = joystickStickRef.current;
     const baseEl = joystickBaseRef.current;
+    const fireEl = fireBtnRef.current;
 
+    /* Multi-Touch Controls Setup */
     const updateJoystickPos = (clientX, clientY) => {
       if (!baseEl || !stickEl) return;
       const rect = baseEl.getBoundingClientRect();
@@ -311,42 +314,73 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       stickEl.style.transform = `translate(${dx}px, ${dy}px)`;
     };
 
-    const onTouchStart = (e) => {
-      joystickActive = true;
-      const touch = e.touches[0];
-      updateJoystickPos(touch.clientX, touch.clientY);
-    };
-
-    const onTouchMove = (e) => {
-      if (!joystickActive) return;
-      const touch = e.touches[0];
-      updateJoystickPos(touch.clientX, touch.clientY);
-    };
-
-    const onTouchEnd = () => {
+    const resetJoystick = () => {
       joystickActive = false;
+      joystickTouchId = null;
       joystickVector = { x: 0, y: 0 };
       if (stickEl) stickEl.style.transform = `translate(0px, 0px)`;
     };
 
-    if (baseEl) {
-      baseEl.addEventListener('touchstart', onTouchStart, { passive: true });
-      window.addEventListener('touchmove', onTouchMove, { passive: true });
-      window.addEventListener('touchend', onTouchEnd);
+    const handleTouchStart = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        if (baseEl && baseEl.contains(touch.target)) {
+          joystickActive = true;
+          joystickTouchId = touch.identifier;
+          updateJoystickPos(touch.clientX, touch.clientY);
+        }
+        if (fireEl && fireEl.contains(touch.target)) {
+          keys['touch_shoot'] = true;
+        }
+      }
+    };
 
-      baseEl.addEventListener('mousedown', (e) => {
+    const handleTouchMove = (e) => {
+      if (!joystickActive) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        if (touch.identifier === joystickTouchId) {
+          updateJoystickPos(touch.clientX, touch.clientY);
+        }
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        if (touch.identifier === joystickTouchId) {
+          resetJoystick();
+        }
+        if (fireEl && fireEl.contains(touch.target)) {
+          keys['touch_shoot'] = false;
+        }
+      }
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: false });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+    window.addEventListener('touchcancel', handleTouchEnd);
+
+    /* Desktop Fallback Mouse Listener */
+    const handleMouseDown = (e) => {
+      if (baseEl && baseEl.contains(e.target)) {
         joystickActive = true;
         updateJoystickPos(e.clientX, e.clientY);
-      });
-      window.addEventListener('mousemove', (e) => {
-        if (joystickActive) updateJoystickPos(e.clientX, e.clientY);
-      });
-      window.addEventListener('mouseup', () => {
-        joystickActive = false;
-        joystickVector = { x: 0, y: 0 };
-        if (stickEl) stickEl.style.transform = `translate(0px, 0px)`;
-      });
-    }
+      }
+    };
+    const handleMouseMove = (e) => {
+      if (joystickActive && joystickTouchId === null) {
+        updateJoystickPos(e.clientX, e.clientY);
+      }
+    };
+    const handleMouseUp = () => {
+      if (joystickTouchId === null) resetJoystick();
+    };
+
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
 
     const gameLoop = () => {
       ctx.fillStyle = '#27ae60';
@@ -429,16 +463,17 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     };
 
     animationFrameId = requestAnimationFrame(gameLoop);
-    window.setTouchKey = (key, isDown) => { keys[key] = isDown; };
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
-      if (baseEl) {
-        baseEl.removeEventListener('touchstart', onTouchStart);
-      }
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
       socket.off('game_state', handleRemoteAction);
       cancelAnimationFrame(animationFrameId);
     };
@@ -590,9 +625,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         </div>
 
         <button 
+          ref={fireBtnRef}
           className="fire-btn-floating"
-          onTouchStart={() => window.setTouchKey('touch_shoot', true)}
-          onMouseDown={() => window.setTouchKey('touch_shoot', true)}
+          type="button"
         >
           🔥 FIRE
         </button>
@@ -603,7 +638,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       </button>
 
       <p className="tank-controls-tip">
-        👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)
+        👉 Drag Joystick to Move | FIRE to Shoot
       </p>
     </div>
   );
