@@ -59,15 +59,6 @@
 .word-chain-form button { padding: 0 16px; border: 0; border-radius: 10px; background: #7c3aed; color: #fff; font-weight: 700; }
 .word-chain-form button:disabled { opacity: 0.45; }
 
-@media (max-width: 520px) {
-  .game-overlay { align-items: center; padding: 10px; }
-  .game-modal-card { width: 100%; max-width: 430px; max-height: calc(100dvh - 20px); padding: 16px; border-radius: 18px; }
-  .game-modal-connect-four { padding: 12px; }
-  .connect-four-wrap { padding: 7px; }
-  .connect-four-drop-row, .connect-four-grid { gap: 3px; }
-  .game-cell { height: clamp(58px, 18vw, 80px); }
-}
-
 .game-header {
   display: flex;
   justify-content: space-between;
@@ -149,114 +140,7 @@
   cursor: pointer;
 }
 
-.games-lobby-card {
-  background: rgba(18, 18, 24, 0.96);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 24px;
-  padding: 22px;
-  width: min(92vw, 540px);
-  max-height: 88dvh;
-  overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65);
-}
-
-.games-lobby-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.games-lobby-eyebrow {
-  color: #a855f7;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1.5px;
-}
-
-.games-lobby-header h3 {
-  margin: 4px 0;
-  color: #fff;
-  font-size: 22px;
-}
-
-.games-lobby-header p {
-  color: #9ca3af;
-  font-size: 12px;
-}
-
-.games-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.game-choice-card {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 14px;
-}
-
-.game-choice-icon {
-  width: 42px;
-  height: 42px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #8b5cf6, #ec4899);
-  font-size: 22px;
-}
-
-.game-choice-copy { min-width: 0; }
-.game-choice-copy h4 { color: #fff; font-size: 14px; }
-.game-choice-copy p { color: #9ca3af; font-size: 11px; margin-top: 3px; }
-
-.game-invite-btn {
-  grid-column: 1 / -1;
-  border: 0;
-  border-radius: 9px;
-  padding: 8px;
-  background: rgba(55, 151, 240, 0.18);
-  color: #60a5fa;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.game-invite-btn:hover { background: rgba(55, 151, 240, 0.3); }
-
-.games-lobby-footer {
-  display: flex;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.quick-play-btn, .lobby-close-btn {
-  flex: 1;
-  border: 0;
-  border-radius: 10px;
-  padding: 11px;
-  color: #fff;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.quick-play-btn { background: linear-gradient(135deg, #8b5cf6, #ec4899); }
-.lobby-close-btn { background: rgba(255, 255, 255, 0.1); }
-
-@media (max-width: 520px) {
-  .games-lobby-card { padding: 16px; border-radius: 18px; }
-  .games-grid { grid-template-columns: 1fr; }
-}
-
-/* Tank Battle Greenery & Landscape Layout */
+/* Tank Battle Layout & Virtual Joystick UI */
 .tank-battle-wrap {
   display: flex;
   flex-direction: column;
@@ -277,141 +161,6 @@
 .p1-score { color: #3498db; }
 .p2-score { color: #e74c3c; }
 
-.canvas-container {
-  width: 100%;
-  max-width: 800px;
-  background-color: #27ae60; /* Greenery turf background */
-  border-radius: 12px;
-  overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  aspect-ratio: 800 / 500;
-}
-
-.tank-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.tank-controls-tip {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #cbd5e1;
-  text-align: center;
-}
-
-/* Mobile Screen Automatic Landscape Orientation Rotation */
-@media screen and (max-width: 768px) and (orientation: portrait) {
-  .game-modal-tank-battle {
-    transform: rotate(90deg);
-    transform-origin: center center;
-    width: 90vh !important;
-    height: 90vw !important;
-  }
-}
-
-
-/* Tank Battle Greenery, Landscape & Mobile Touch D-Pad */
-.tank-battle-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-}
-
-.tank-score-board {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 0 4px;
-  margin-bottom: 6px;
-}
-
-.p1-score { color: #3498db; }
-.p2-score { color: #e74c3c; }
-
-.canvas-container {
-  width: 100%;
-  max-width: 800px;
-  background-color: #27ae60;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  aspect-ratio: 800 / 500;
-}
-
-.tank-canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-/* Mobile Touch D-Pad Styles */
-.mobile-tank-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  margin-top: 10px;
-}
-
-.control-group {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-}
-
-.control-group button {
-  flex: 1;
-  padding: 10px 2px;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 8px;
-  color: #fff;
-  font-size: 11px;
-  font-weight: bold;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.control-group button:active {
-  background: rgba(168, 85, 247, 0.6);
-}
-
-.fire-group button {
-  background: #e74c3c;
-  color: white;
-  padding: 10px;
-  font-size: 13px;
-}
-
-.fire-group button:active {
-  background: #c0392b;
-}
-
-.tank-controls-tip {
-  margin-top: 6px;
-  font-size: 11px;
-  color: #cbd5e1;
-  text-align: center;
-}
-
-/* Mobile Screen Automatic Landscape Orientation Rotation */
-@media screen and (max-width: 768px) and (orientation: portrait) {
-  .game-modal-tank-battle {
-    transform: rotate(90deg);
-    transform-origin: center center;
-    width: 90vh !important;
-    height: 90vw !important;
-  }
-}
-
-/* Canvas Container relative positioning for overlays */
 .canvas-container {
   position: relative;
   width: 100%;
@@ -430,7 +179,7 @@
   display: block;
 }
 
-/* Virtual Joystick UI inside canvas */
+/* Virtual Joystick Base and Stick */
 .joystick-base {
   position: absolute;
   bottom: 20px;
@@ -460,7 +209,7 @@
   transform: translate(0px, 0px);
 }
 
-/* Floating Fire Button UI inside canvas */
+/* Floating Fire Button inside Canvas */
 .fire-btn-floating {
   position: absolute;
   bottom: 20px;
