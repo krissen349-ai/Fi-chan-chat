@@ -82,20 +82,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
       const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
       if (requestFn) {
-        requestFn.call(elem).then(() => {
-          if (screen.orientation && screen.orientation.lock) {
-            screen.orientation.lock('landscape').catch(err => {
-              console.log('Orientation lock info:', err);
-            });
-          }
-        }).catch(err => {
-          console.error("Fullscreen error:", err.message);
-        });
+        requestFn.call(elem).catch(err => console.error("Fullscreen error:", err.message));
       }
     } else {
-      if (screen.orientation && screen.orientation.unlock) {
-        screen.orientation.unlock();
-      }
       const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
       if (exitFn) {
         exitFn.call(document);
@@ -180,8 +169,16 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (keys[controls.right]) { this.angle += this.rotSpeed; moved = true; }
 
         if (joystickActive) {
-          const joystickAngle = Math.atan2(joystickVector.y, joystickVector.x);
-          const magnitude = Math.hypot(joystickVector.x, joystickVector.y);
+          /* Fullscreen rotation handling for Touch input */
+          let vx = joystickVector.x;
+          let vy = joystickVector.y;
+          if (document.fullscreenElement || document.webkitFullscreenElement) {
+            vx = -joystickVector.y;
+            vy = joystickVector.x;
+          }
+
+          const joystickAngle = Math.atan2(vy, vx);
+          const magnitude = Math.hypot(vx, vy);
 
           if (magnitude > 0.1) {
             let angleDiff = joystickAngle - this.angle;
