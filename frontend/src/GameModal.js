@@ -79,15 +79,27 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const toggleFullScreen = () => {
     const elem = tankWrapRef.current;
     if (!elem) return;
+    
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
       const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
       if (requestFn) {
-        requestFn.call(elem).catch(err => console.error("Fullscreen error:", err.message));
+        requestFn.call(elem).then(() => {
+          // Automatically lock screen orientation to landscape on mobile devices
+          if (screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock('landscape').catch(err => {
+              console.log("Orientation lock not supported or allowed:", err);
+            });
+          }
+        }).catch(err => console.error("Fullscreen error:", err.message));
       }
     } else {
       const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
       if (exitFn) {
-        exitFn.call(document);
+        exitFn.call(document).then(() => {
+          if (screen.orientation && screen.orientation.unlock) {
+            screen.orientation.unlock();
+          }
+        }).catch(err => console.log("Exit fullscreen error:", err));
       }
     }
   };
