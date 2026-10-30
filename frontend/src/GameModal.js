@@ -99,9 +99,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     }
   };
 
-  /* ==========================================================
-     ================ TANK BATTLE ENGINE SECTION ==============
-     ========================================================== */
   useEffect(() => {
     if (gameId !== 'tank-battle') return;
     const canvas = canvasRef.current;
@@ -137,7 +134,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.size = 30;
         this.angle = angle;
         this.turretAngle = 0;
-        this.speed = 3.2; /* Fast movement speed */
+        this.speed = 3.2;
         this.rotSpeed = 0.07;
         this.cooldown = 0;
         this.maxHealth = 100;
@@ -491,7 +488,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       cancelAnimationFrame(animationFrameId);
     };
   }, [gameId, playerIndex, socket, roomId]);
-  /* ========================================================== */
 
   const sendAction = (action) => {
     if (!roomId) return;
