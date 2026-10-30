@@ -9,14 +9,19 @@ const QUIZ_QUESTIONS = [
   { question: 'How many colors are in a rainbow traditionally?', options: ['Five', 'Six', 'Seven', 'Eight'] }
 ];
 
-const GAME_DETAILS = {
-  'tic-tac-toe': { icon: '⭕', name: 'Tic-Tac-Toe' },
-  'connect-four': { icon: '🔴', name: 'Connect Four' },
-  'rock-paper-scissors': { icon: '✊', name: 'Rock Paper Scissors' },
-  'quiz-battle': { icon: '🧠', name: 'Quiz Battle' },
-  'word-chain': { icon: '🔤', name: 'Word Chain' },
-  'tank-battle': { icon: '🕹️', name: 'Tank Battle' }
-};
+const GAME_LIST = [
+  { id: 'tic-tac-toe', icon: '⭕', name: 'Tic-Tac-Toe', desc: 'Classic three-in-a-row duel' },
+  { id: 'connect-four', icon: '🔴', name: 'Connect Four', desc: 'Drop four discs in a row' },
+  { id: 'rock-paper-scissors', icon: '✊', name: 'Rock Paper Scissors', desc: 'Quick best-of-three battle' },
+  { id: 'quiz-battle', icon: '🧠', name: 'Quiz Battle', desc: 'Race to the right answers' },
+  { id: 'word-chain', icon: '🔤', name: 'Word Chain', desc: 'Keep the word game going' },
+  { id: 'tank-battle', icon: '🕹️', name: 'Tank Battle', desc: '1v1 tank showdown & tactical blasts' }
+];
+
+const GAME_DETAILS = GAME_LIST.reduce((acc, game) => {
+  acc[game.id] = game;
+  return acc;
+}, {});
 
 const CHOICES = [
   { id: 'rock', icon: '✊', label: 'Rock' },
@@ -77,7 +82,7 @@ const createSoundFX = () => {
 
 const soundFX = createSoundFX();
 
-const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) => {
+const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onStartGame }) => {
   const [gameState, setGameState] = useState(gameSession?.state || null);
   const [wordInput, setWordInput] = useState('');
   const [actionError, setActionError] = useState('');
@@ -88,7 +93,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   const tankWrapRef = useRef(null);
   const fireBtnRef = useRef(null);
 
-  const gameId = gameSession?.gameId || 'tic-tac-toe';
+  const gameId = gameSession?.gameId;
   const roomId = gameSession?.gameRoomId;
   const playerIndex = Number.isInteger(gameSession?.playerIndex) ? gameSession.playerIndex : (gameSession?.symbol === 'O' ? 1 : 0);
   const mySymbol = gameSession?.symbol || (playerIndex === 0 ? 'X' : 'O');
@@ -134,14 +139,14 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
       if (requestFn) {
         requestFn.call(elem).then(() => {
-          if (screen.orientation && screen.orientation.lock) {
-            screen.orientation.lock('landscape').catch(() => {});
+          if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
+            window.screen.orientation.lock('landscape').catch(() => {});
           }
         }).catch(err => console.error("Fullscreen error:", err.message));
       }
     } else {
-      if (screen.orientation && screen.orientation.unlock) {
-        screen.orientation.unlock();
+      if (window.screen && window.screen.orientation && window.screen.orientation.unlock) {
+        window.screen.orientation.unlock();
       }
       const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
       if (exitFn) {
@@ -163,7 +168,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     let keys = {};
     let bullets = [];
     let particles = [];
-    let trackMarks = []; // Tire tracks fading in 2 seconds
+    let trackMarks = [];
     let barriers = [
       { x: 180, y: 120, w: 60, h: 220 },
       { x: 560, y: 160, w: 60, h: 220 },
@@ -179,7 +184,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.size = 32;
         this.angle = angle;
         this.speed = 3.2;
-        this.rotSpeed = 0.045; // Smooth continuous 360 rotation speed
+        this.rotSpeed = 0.045;
         this.cooldown = 0;
         this.maxHealth = 100;
         this.health = 100;
@@ -192,12 +197,10 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
         let moved = false;
 
-        // Agar fire button hold kiya hai, toh rotation ruk jayegi aur tank sidha chalega
         if (isHoldingFire) {
           let nextX = this.x + Math.cos(this.angle) * this.speed;
           let nextY = this.y + Math.sin(this.angle) * this.speed;
           if (!this.checkWallCollision(nextX, nextY)) {
-            // Drop Tire Tracks
             trackMarks.push({
               x: this.x,
               y: this.y,
@@ -211,7 +214,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             moved = true;
           }
         } else {
-          // Warna tank lagatar smoothly 360 degree ghumta rahega
           this.angle += this.rotSpeed;
           moved = true;
         }
@@ -240,7 +242,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         ctx.save();
         ctx.translate(this.x, this.y);
 
-        // Health bar
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(-22, -this.size - 12, 44, 6);
         ctx.fillStyle = this.health > 40 ? '#10b981' : '#ef4444';
@@ -248,28 +249,23 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
         ctx.rotate(this.angle);
 
-        // Tracks
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(-this.size/2 - 2, -this.size/2 - 2, this.size + 4, 8);
         ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 8);
 
-        // Tank Body
         ctx.fillStyle = this.mainColor;
         ctx.beginPath();
         ctx.roundRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8, 4);
         ctx.fill();
 
-        // Inner plate
         ctx.fillStyle = this.accentColor;
         ctx.fillRect(-10, -8, 20, 16);
 
-        // Tank Barrel (Mundi)
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(0, -4, 26, 8);
         ctx.fillStyle = '#334155';
         ctx.fillRect(20, -5, 6, 10);
 
-        // Muzzle Flash Effect
         if (this.muzzleFlash > 0) {
           ctx.fillStyle = '#f59e0b';
           ctx.beginPath();
@@ -315,7 +311,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       }
     };
 
-    // Fire action handler (Click to fire)
     window.triggerTankShoot = () => {
       const me = playerIndex === 0 ? p1 : p2;
       if (me.cooldown > 0) return;
@@ -342,7 +337,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     };
 
     const gameLoop = () => {
-      // Background Grid Pattern
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -355,7 +349,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
       }
 
-      // Draw & Fade Track Marks (2 seconds expiration)
       const now = Date.now();
       for (let i = trackMarks.length - 1; i >= 0; i--) {
         const mark = trackMarks[i];
@@ -430,7 +423,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           p1.health -= 25;
           if (p1.health <= 0) {
             setTankScores(prev => ({ ...prev, p2: prev.p2 + 1 }));
-            p1.health = 100; p2.health = 100;
+            p1.health = 100; p1.health = 100;
             p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
           }
         } else {
@@ -489,6 +482,36 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     }
     return 'Game on!';
   };
+
+  const renderLobby = () => (
+    <div className="games-lobby-wrap">
+      <div className="games-lobby-header">
+        <div className="games-lobby-tag">PLAY TOGETHER</div>
+        <h2 className="games-lobby-title">🎮 Games Lobby</h2>
+        <p className="games-lobby-subtitle">Choose a game and challenge your chat partner.</p>
+      </div>
+
+      <div className="games-grid">
+        {GAME_LIST.map((game) => (
+          <div className="game-card" key={game.id}>
+            <div className="game-card-top">
+              <div className="game-icon-box">{game.icon}</div>
+              <div className="game-card-info">
+                <h4>{game.name}</h4>
+                <p>{game.desc}</p>
+              </div>
+            </div>
+            <button 
+              className="game-invite-btn"
+              onClick={() => onStartGame && onStartGame(game.id)}
+            >
+              Invite / Play
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   const renderTicTacToe = () => (
     <div className="tic-tac-toe-board">
@@ -637,7 +660,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
   );
 
   const renderGame = () => {
+    if (!gameId) return renderLobby();
     if (!gameState && gameId !== 'tank-battle') return <p className="game-instruction">Waiting for session...</p>;
+
     switch (gameId) {
       case 'connect-four': return renderConnectFour();
       case 'rock-paper-scissors': return renderRps();
@@ -650,24 +675,28 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
   return (
     <div className="modal-overlay game-overlay">
-      <div className={`game-modal-card animate-pop-in game-modal-${gameId}`}>
+      <div className={`game-modal-card animate-pop-in ${gameId ? `game-modal-${gameId}` : 'games-lobby-modal'}`}>
         <div className="game-header">
-          <h3>{details.icon} {details.name}</h3>
+          <h3>{gameId ? `${details.icon} ${details.name}` : '🎮 Games Lobby'}</h3>
           <button className="close-game-btn" onClick={onClose}>✕</button>
         </div>
 
-        <div className="game-status-bar">
-          <p>{getStatus()}</p>
-          <span className="symbol-badge">You: {playerIndex === 0 ? 'P1' : 'P2'}</span>
-        </div>
+        {gameId && (
+          <div className="game-status-bar">
+            <p>{getStatus()}</p>
+            <span className="symbol-badge">You: {playerIndex === 0 ? 'P1' : 'P2'}</span>
+          </div>
+        )}
 
         {actionError && <p className="game-action-error">{actionError}</p>}
         {renderGame()}
 
-        <div className="game-footer">
-          <button className="reset-game-btn" onClick={() => sendAction({ type: 'restart' })}>Restart Game</button>
-          <span className="game-opponent-label">Playing with {activeChat?.name || 'your friend'}</span>
-        </div>
+        {gameId && (
+          <div className="game-footer">
+            <button className="reset-game-btn" onClick={() => sendAction({ type: 'restart' })}>Restart Game</button>
+            <span className="game-opponent-label">Playing with {activeChat?.name || 'your friend'}</span>
+          </div>
+        )}
       </div>
     </div>
   );
