@@ -82,9 +82,16 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
       const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
       if (requestFn) {
-        requestFn.call(elem).catch(err => console.error("Fullscreen error:", err.message));
+        requestFn.call(elem).then(() => {
+          if (screen.orientation && screen.orientation.lock) {
+            screen.orientation.lock('landscape').catch(() => {});
+          }
+        }).catch(err => console.error("Fullscreen error:", err.message));
       }
     } else {
+      if (screen.orientation && screen.orientation.unlock) {
+        screen.orientation.unlock();
+      }
       const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
       if (exitFn) {
         exitFn.call(document);
@@ -130,8 +137,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         this.size = 30;
         this.angle = angle;
         this.turretAngle = 0;
-        this.speed = 2.5;
-        this.rotSpeed = 0.055;
+        this.speed = 3.2; /* Fast movement speed */
+        this.rotSpeed = 0.07;
         this.cooldown = 0;
         this.maxHealth = 100;
         this.health = 100;
@@ -169,7 +176,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (keys[controls.right]) { this.angle += this.rotSpeed; moved = true; }
 
         if (joystickActive) {
-          /* Fullscreen rotation handling for Touch input */
           let vx = joystickVector.x;
           let vy = joystickVector.y;
           if (document.fullscreenElement || document.webkitFullscreenElement) {
@@ -205,15 +211,15 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           const bulletData = {
             x: this.x + Math.cos(totalAngle) * 25,
             y: this.y + Math.sin(totalAngle) * 25,
-            vx: Math.cos(totalAngle) * 6,
-            vy: Math.sin(totalAngle) * 6
+            vx: Math.cos(totalAngle) * 7.5,
+            vy: Math.sin(totalAngle) * 7.5
           };
           bullets.push({ ...bulletData, ownerIndex: playerIndex });
           
           if (socket && roomId) {
             socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
           }
-          this.cooldown = 20;
+          this.cooldown = 18;
         }
 
         this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));

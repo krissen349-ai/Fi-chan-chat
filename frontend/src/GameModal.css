@@ -379,7 +379,7 @@
   text-align: center;
 }
 
-/* Force Forced 90deg Rotation in Fullscreen Mode */
+/* Forced 90deg Rotation in Fullscreen Mode for Perfect Mobile Landscape */
 :fullscreen .tank-battle-wrap,
 :-webkit-full-screen .tank-battle-wrap {
   width: 100vh;
