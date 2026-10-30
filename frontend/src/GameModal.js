@@ -108,7 +108,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
 
     let joystickActive = false;
     let joystickVector = { x: 0, y: 0 };
-    const joystickMaxRadius = 40;
+    const joystickMaxRadius = 38;
 
     const handleKeyDown = (e) => { keys[e.key] = true; };
     const handleKeyUp = (e) => { keys[e.key] = false; };
@@ -137,7 +137,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (!this.isMe) return;
 
         if (Date.now() - this.lastTurretRotate > 3000) {
-          this.turretAngle += Math.PI;
+          this.turretAngle += Math.PI / 4;
           this.lastTurretRotate = Date.now();
         }
 
@@ -172,9 +172,14 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
 
             if (Math.abs(angleDiff) > 0.08) {
-              this.rotate(angleDiff > 0 ? 1 : -1);
+              this.angle += (angleDiff > 0 ? 1 : -1) * this.rotSpeed;
             }
-            this.move(1);
+            let nextX = this.x + Math.cos(this.angle) * this.speed * magnitude;
+            let nextY = this.y + Math.sin(this.angle) * this.speed * magnitude;
+            if (!this.checkWallCollision(nextX, nextY)) {
+              this.x = nextX;
+              this.y = nextY;
+            }
             moved = true;
           }
         }
@@ -195,7 +200,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
           if (socket && roomId) {
             socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
           }
-          this.cooldown = 30;
+          this.cooldown = 25;
         }
 
         this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
@@ -207,19 +212,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
             action: { type: 'tank_move', x: this.x, y: this.y, angle: this.angle, turretAngle: this.turretAngle, playerIndex }
           });
         }
-      }
-
-      move(dir) {
-        let nextX = this.x + Math.cos(this.angle) * this.speed * dir;
-        let nextY = this.y + Math.sin(this.angle) * this.speed * dir;
-        if (!this.checkWallCollision(nextX, nextY)) {
-          this.x = nextX;
-          this.y = nextY;
-        }
-      }
-
-      rotate(dir) {
-        this.angle += this.rotSpeed * dir;
       }
 
       checkWallCollision(nx, ny) {
@@ -341,7 +333,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       baseEl.addEventListener('touchstart', onTouchStart, { passive: true });
       window.addEventListener('touchmove', onTouchMove, { passive: true });
       window.addEventListener('touchend', onTouchEnd);
-      
+
       baseEl.addEventListener('mousedown', (e) => {
         joystickActive = true;
         updateJoystickPos(e.clientX, e.clientY);
@@ -442,6 +434,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      if (baseEl) {
+        baseEl.removeEventListener('touchstart', onTouchStart);
+      }
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
       socket.off('game_state', handleRemoteAction);
       cancelAnimationFrame(animationFrameId);
     };
@@ -585,7 +582,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         <span className="p2-score">Red (P2): {tankScores.p2}</span>
       </div>
       
-      <div className="canvas-container" style={{ position: 'relative' }}>
+      <div className="canvas-container">
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
 
         <div ref={joystickBaseRef} className="joystick-base">
@@ -606,7 +603,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       </button>
 
       <p className="tank-controls-tip">
-        {playerIndex === 0 ? "👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)" : "👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)"}
+        👉 Drag Joystick to Move | FIRE to Shoot (Turret auto-rotates every 3s)
       </p>
     </div>
   );
