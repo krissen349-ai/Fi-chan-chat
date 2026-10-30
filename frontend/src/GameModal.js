@@ -87,7 +87,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
     }
   };
 
-
   /* ==========================================================
      ================ TANK BATTLE ENGINE SECTION ==============
      ========================================================== */
@@ -107,7 +106,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       { x: 340, y: 210, w: 120, h: 70 }
     ];
 
-    // Joystick State Variables
     let joystickActive = false;
     let joystickVector = { x: 0, y: 0 };
     const joystickMaxRadius = 40;
@@ -138,7 +136,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       update() {
         if (!this.isMe) return;
 
-        // Turret automatic 180 degree rotation every 3 seconds
         if (Date.now() - this.lastTurretRotate > 3000) {
           this.turretAngle += Math.PI;
           this.lastTurretRotate = Date.now();
@@ -165,7 +162,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (keys[controls.left]) { this.angle -= this.rotSpeed; moved = true; }
         if (keys[controls.right]) { this.angle += this.rotSpeed; moved = true; }
 
-        // Virtual Joystick Controller Movement Handling
         if (joystickActive) {
           const joystickAngle = Math.atan2(joystickVector.y, joystickVector.x);
           const magnitude = Math.hypot(joystickVector.x, joystickVector.y);
@@ -186,7 +182,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         if (this.cooldown > 0) this.cooldown--;
         
         if ((keys[controls.shoot] || keys['touch_shoot']) && this.cooldown === 0) {
-          keys['touch_shoot'] = false; // Reset touch fire trigger
+          keys['touch_shoot'] = false;
           let totalAngle = this.angle + this.turretAngle;
           const bulletData = {
             x: this.x + Math.cos(totalAngle) * 25,
@@ -300,7 +296,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       }
     };
 
-    // Joystick Touch Listeners Implementation
     const stickEl = joystickStickRef.current;
     const baseEl = joystickBaseRef.current;
 
@@ -347,7 +342,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       window.addEventListener('touchmove', onTouchMove, { passive: true });
       window.addEventListener('touchend', onTouchEnd);
       
-      // Mouse fallback for testing on PC
       baseEl.addEventListener('mousedown', (e) => {
         joystickActive = true;
         updateJoystickPos(e.clientX, e.clientY);
@@ -594,12 +588,10 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
       <div className="canvas-container" style={{ position: 'relative' }}>
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
 
-        {/* Floating Virtual Joystick on Left Side of Canvas */}
         <div ref={joystickBaseRef} className="joystick-base">
           <div ref={joystickStickRef} className="joystick-stick"></div>
         </div>
 
-        {/* Floating Fire Button on Right Side of Canvas */}
         <button 
           className="fire-btn-floating"
           onTouchStart={() => window.setTouchKey('touch_shoot', true)}
@@ -609,7 +601,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession }) =>
         </button>
       </div>
 
-      {/* Full Screen Mode Button */}
       <button className="fullscreen-btn" onClick={toggleFullScreen}>
         📺 Full Screen Mode
       </button>
