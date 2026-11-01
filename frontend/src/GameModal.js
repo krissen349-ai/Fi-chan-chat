@@ -183,8 +183,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.accentColor = accentColor;
         this.size = 32;
         this.angle = angle;
-        this.speed = 3.2;
-        this.rotSpeed = 0.045;
+        this.speed = 3.2; // Driving speed when holding fire button
+        this.rotSpeed = 0.045; // Smooth 360 rotation speed
         this.cooldown = 0;
         this.maxHealth = 100;
         this.health = 100;
@@ -197,6 +197,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
         let moved = false;
 
+        // Jab button hold kiya hai, toh rotation ruk jayegi aur tank seedha aage chalne lagega
         if (isHoldingFire) {
           let nextX = this.x + Math.cos(this.angle) * this.speed;
           let nextY = this.y + Math.sin(this.angle) * this.speed;
@@ -214,6 +215,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
             moved = true;
           }
         } else {
+          // Warna tank lagatar rotate hota rahega
           this.angle += this.rotSpeed;
           moved = true;
         }
@@ -242,6 +244,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ctx.save();
         ctx.translate(this.x, this.y);
 
+        // Health bar
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(-22, -this.size - 12, 44, 6);
         ctx.fillStyle = this.health > 40 ? '#10b981' : '#ef4444';
@@ -249,23 +252,28 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
         ctx.rotate(this.angle);
 
+        // Tracks
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(-this.size/2 - 2, -this.size/2 - 2, this.size + 4, 8);
         ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 8);
 
+        // Tank Body
         ctx.fillStyle = this.mainColor;
         ctx.beginPath();
         ctx.roundRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8, 4);
         ctx.fill();
 
+        // Inner plate
         ctx.fillStyle = this.accentColor;
         ctx.fillRect(-10, -8, 20, 16);
 
+        // Tank Barrel
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(0, -4, 26, 8);
         ctx.fillStyle = '#334155';
         ctx.fillRect(20, -5, 6, 10);
 
+        // Muzzle Flash Effect
         if (this.muzzleFlash > 0) {
           ctx.fillStyle = '#f59e0b';
           ctx.beginPath();
@@ -340,6 +348,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      // Grid background pattern
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
       ctx.lineWidth = 1;
       for (let x = 0; x < canvas.width; x += 40) {
@@ -349,6 +358,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
       }
 
+      // Render and fade track marks (2 seconds limit)
       const now = Date.now();
       for (let i = trackMarks.length - 1; i >= 0; i--) {
         const mark = trackMarks[i];
@@ -493,13 +503,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
       <div className="games-grid">
         {GAME_LIST.map((game) => (
-          <div className="game-card" key={game.id}>
-            <div className="game-card-top">
-              <div className="game-icon-box">{game.icon}</div>
-              <div className="game-card-info">
-                <h4>{game.name}</h4>
-                <p>{game.desc}</p>
-              </div>
+          <div className="game-choice-card" key={game.id}>
+            <div className="game-choice-icon">{game.icon}</div>
+            <div className="game-choice-copy">
+              <h4>{game.name}</h4>
+              <p>{game.desc}</p>
             </div>
             <button 
               className="game-invite-btn"
@@ -645,7 +653,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
             if (window.setTouchKey) window.setTouchKey('touch_shoot', false); 
           }}
         >
-          🔥 FIRE
+          🔥
         </button>
       </div>
 
@@ -654,7 +662,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       </button>
 
       <p className="tank-controls-tip">
-        👉 Tap to Fire | Hold FIRE Button to Drive Straight!
+        👉 Tap to Shoot & Pause Rotation | Hold to Drive Straight!
       </p>
     </div>
   );
@@ -675,7 +683,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
   return (
     <div className="modal-overlay game-overlay">
-      <div className={`game-modal-card animate-pop-in ${gameId ? `game-modal-${gameId}` : 'games-lobby-modal'}`}>
+      <div className={`game-modal-card animate-pop-in ${gameId ? `game-modal-${gameId}` : 'games-lobby-card'}`}>
         <div className="game-header">
           <h3>{gameId ? `${details.icon} ${details.name}` : '🎮 Games Lobby'}</h3>
           <button className="close-game-btn" onClick={onClose}>✕</button>
