@@ -9,11 +9,9 @@ const GAMES = [
   { id: 'quiz-battle', icon: '🧠', name: 'Quiz Battle', description: 'Race to the right answers' },
   { id: 'word-chain', icon: '🔤', name: 'Word Chain', description: 'Keep the word game going' },
   
-  // Stickman Party Style Naye 4 Games
+  // Stickman Party Style Naye  Games
   { id: 'tank-battle', icon: '🕹️', name: 'Tank Battle', description: '1v1 tank showdown & tactical blasts' },
-  { id: 'penalty-shootout', icon: '🥅', name: 'Penalty Shootout', description: 'Goal scorer duel: strike or save' },
-  { id: 'stickman-run', icon: '🏃', name: 'Stickman Run', description: 'Fast-paced dash to the finish line' },
-  { id: 'sword-duel', icon: '🗡️', name: 'Stick Sword Duel', description: 'Physics-based quick sword fight' }
+
 ];
 
 const GamesLobby = ({ onClose, onInvite, onQuickPlay }) => (
