@@ -1,5 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './GameModal.css';
+import GameFullscreenButton from './games/GameFullscreenButton';
+import GlassBridge from './games/GlassBridge';
+import RedLightGreenLight from './games/RedLightGreenLight';
+import { GAMES } from './games/gameCatalog';
 
 const QUIZ_QUESTIONS = [
   { question: 'Which planet is known as the Red Planet?', options: ['Venus', 'Mars', 'Jupiter', 'Mercury'] },
@@ -9,16 +13,7 @@ const QUIZ_QUESTIONS = [
   { question: 'How many colors are in a rainbow traditionally?', options: ['Five', 'Six', 'Seven', 'Eight'] }
 ];
 
-const GAME_LIST = [
-  { id: 'tic-tac-toe', icon: '⭕', name: 'Tic-Tac-Toe', desc: 'Classic three-in-a-row duel' },
-  { id: 'connect-four', icon: '🔴', name: 'Connect Four', desc: 'Drop four discs in a row' },
-  { id: 'rock-paper-scissors', icon: '✊', name: 'Rock Paper Scissors', desc: 'Quick best-of-three battle' },
-  { id: 'quiz-battle', icon: '🧠', name: 'Quiz Battle', desc: 'Race to the right answers' },
-  { id: 'word-chain', icon: '🔤', name: 'Word Chain', desc: 'Keep the word game going' },
-  { id: 'tank-battle', icon: '🕹️', name: 'Tank Battle', desc: '1v1 tank showdown & tactical blasts' }
-];
-
-const GAME_DETAILS = GAME_LIST.reduce((acc, game) => {
+const GAME_DETAILS = GAMES.reduce((acc, game) => {
   acc[game.id] = game;
   return acc;
 }, {});
@@ -91,7 +86,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
   const canvasRef = useRef(null);
   const tankWrapRef = useRef(null);
-  const fireBtnRef = useRef(null);
 
   const gameId = gameSession?.gameId;
   const roomId = gameSession?.gameRoomId;
@@ -120,40 +114,25 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     const handleMissingSession = (error) => {
       if (error.gameRoomId === roomId) setActionError('This game session expired. Close this window and send a new invite.');
     };
+    const handleOpponentLeft = (event) => {
+      if (event.gameRoomId === roomId) setActionError('Your opponent returned to chat. Send a new invitation to play again.');
+    };
 
     socket.on('game_state', handleGameState);
     socket.on('game_action_error', handleGameError);
     socket.on('game_session_missing', handleMissingSession);
-    socket.emit('join_game', { gameRoomId: roomId });
+    socket.on('game_opponent_left', handleOpponentLeft);
+    const joinGame = () => socket.emit('join_game', { gameRoomId: roomId });
+    socket.on('connect', joinGame);
+    if (socket.connected) joinGame();
     return () => {
+      socket.off('connect', joinGame);
       socket.off('game_state', handleGameState);
       socket.off('game_action_error', handleGameError);
       socket.off('game_session_missing', handleMissingSession);
+      socket.off('game_opponent_left', handleOpponentLeft);
     };
   }, [socket, roomId, playerIndex]);
-
-  const toggleFullScreen = () => {
-    const elem = tankWrapRef.current;
-    if (!elem) return;
-    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-      const requestFn = elem.requestFullscreen || elem.webkitRequestFullscreen;
-      if (requestFn) {
-        requestFn.call(elem).then(() => {
-          if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
-            window.screen.orientation.lock('landscape').catch(() => {});
-          }
-        }).catch(err => console.error("Fullscreen error:", err.message));
-      }
-    } else {
-      if (window.screen && window.screen.orientation && window.screen.orientation.unlock) {
-        window.screen.orientation.unlock();
-      }
-      const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
-      if (exitFn) {
-        exitFn.call(document);
-      }
-    }
-  };
 
   /* ==========================================================
      ================ TANK BATTLE ENGINE SECTION ==============
@@ -167,7 +146,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     let animationFrameId;
     let keys = {};
     let bullets = [];
-    let particles = [];
     let trackMarks = [];
     let barriers = [
       { x: 180, y: 120, w: 60, h: 220 },
@@ -192,15 +170,20 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.muzzleFlash = 0;
       }
 
-      update(isHoldingFire) {
+      update(controls) {
         if (!this.isMe) return;
 
         let moved = false;
 
-        // Jab button hold kiya hai, toh rotation ruk jayegi aur tank seedha aage chalne lagega
-        if (isHoldingFire) {
-          let nextX = this.x + Math.cos(this.angle) * this.speed;
-          let nextY = this.y + Math.sin(this.angle) * this.speed;
+        if (controls.left || controls.right) {
+          this.angle += controls.left ? -this.rotSpeed : this.rotSpeed;
+          moved = true;
+        }
+
+        const direction = controls.forward ? 1 : controls.backward ? -1 : 0;
+        if (direction) {
+          let nextX = this.x + Math.cos(this.angle) * this.speed * direction;
+          let nextY = this.y + Math.sin(this.angle) * this.speed * direction;
           if (!this.checkWallCollision(nextX, nextY)) {
             trackMarks.push({
               x: this.x,
@@ -214,10 +197,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
             this.y = nextY;
             moved = true;
           }
-        } else {
-          // Warna tank lagatar rotate hota rahega
-          this.angle += this.rotSpeed;
-          moved = true;
         }
 
         this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
@@ -237,6 +216,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           if (nx + this.size/2 > b.x && nx - this.size/2 < b.x + b.w &&
               ny + this.size/2 > b.y && ny - this.size/2 < b.y + b.h) return true;
         }
+        const otherTank = this === p1 ? p2 : p1;
+        if (otherTank && Math.hypot(nx - otherTank.x, ny - otherTank.y) < this.size) return true;
         return false;
       }
 
@@ -290,34 +271,18 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     const p2 = new Tank(700, 250, '#dc2626', '#f87171', Math.PI, playerIndex === 1);
 
     const handleRemoteAction = (data) => {
-      const { action } = data;
-      if (!action) return;
-      if (action.type === 'tank_move' && action.playerIndex !== playerIndex) {
-        const target = action.playerIndex === 0 ? p1 : p2;
-        target.x = action.x;
-        target.y = action.y;
-        target.angle = action.angle;
-      }
-      if (action.type === 'tank_shoot' && action.playerIndex !== playerIndex) {
-        bullets.push({ ...action.bullet, ownerIndex: action.playerIndex });
-        soundFX.playShoot();
-      }
+      if (!Array.isArray(data.tanks)) return;
+      [p1, p2].forEach((tank, index) => {
+        const remoteTank = data.tanks[index];
+        tank.x = remoteTank.x;
+        tank.y = remoteTank.y;
+        tank.angle = remoteTank.angle;
+        tank.health = remoteTank.health;
+      });
+      bullets = Array.isArray(data.bullets) ? data.bullets.map(bullet => ({ ...bullet })) : [];
+      if (Array.isArray(data.scores)) setTankScores({ p1: data.scores[0], p2: data.scores[1] });
     };
     socket.on('game_state', handleRemoteAction);
-
-    const createExplosion = (x, y, color) => {
-      soundFX.playExplosion();
-      for (let i = 0; i < 25; i++) {
-        particles.push({
-          x, y,
-          vx: (Math.random() - 0.5) * 8,
-          vy: (Math.random() - 0.5) * 8,
-          radius: Math.random() * 4 + 2,
-          alpha: 1,
-          color
-        });
-      }
-    };
 
     window.triggerTankShoot = () => {
       const me = playerIndex === 0 ? p1 : p2;
@@ -326,16 +291,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       me.muzzleFlash = 4;
       soundFX.playShoot();
 
-      const bulletData = {
-        x: me.x + Math.cos(me.angle) * 30,
-        y: me.y + Math.sin(me.angle) * 30,
-        vx: Math.cos(me.angle) * 8.5,
-        vy: Math.sin(me.angle) * 8.5
-      };
-      bullets.push({ ...bulletData, ownerIndex: playerIndex });
-      
       if (socket && roomId) {
-        socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot', bullet: bulletData, playerIndex } });
+        socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot' } });
       }
       me.cooldown = 16;
     };
@@ -343,6 +300,27 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     window.setTouchKey = (key, isDown) => {
       keys[key] = isDown;
     };
+
+    const keyBindings = {
+      w: 'forward', ArrowUp: 'forward',
+      s: 'backward', ArrowDown: 'backward',
+      a: 'left', ArrowLeft: 'left',
+      d: 'right', ArrowRight: 'right'
+    };
+    const handleKeyDown = (event) => {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (keyBindings[key] || key === ' ') event.preventDefault();
+      if (keyBindings[key]) keys[keyBindings[key]] = true;
+      if (key === ' ' && !event.repeat && window.triggerTankShoot) window.triggerTankShoot();
+    };
+    const handleKeyUp = (event) => {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (keyBindings[key]) keys[keyBindings[key]] = false;
+    };
+    const releaseKeys = () => { keys = {}; };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', releaseKeys);
 
     const gameLoop = () => {
       ctx.fillStyle = '#0f172a';
@@ -386,10 +364,14 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ctx.strokeRect(b.x, b.y, b.w, b.h);
       }
 
-      const isHoldingFire = Boolean(keys['touch_shoot'] || keys[' ']);
-
-      p1.update(playerIndex === 0 ? isHoldingFire : false);
-      p2.update(playerIndex === 1 ? isHoldingFire : false);
+      const controls = {
+        forward: Boolean(keys.forward || keys.w || keys.ArrowUp),
+        backward: Boolean(keys.backward || keys.s || keys.ArrowDown),
+        left: Boolean(keys.left || keys.a || keys.ArrowLeft),
+        right: Boolean(keys.right || keys.d || keys.ArrowRight)
+      };
+      p1.update(playerIndex === 0 ? controls : {});
+      p2.update(playerIndex === 1 ? controls : {});
       
       if (p1.cooldown > 0) p1.cooldown--;
       if (p2.cooldown > 0) p2.cooldown--;
@@ -397,71 +379,14 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       p1.draw();
       p2.draw();
 
-      for (let i = bullets.length - 1; i >= 0; i--) {
-        let b = bullets[i];
-        b.x += b.vx;
-        b.y += b.vy;
-
-        if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
-          bullets.splice(i, 1);
-          continue;
-        }
-
-        let hit = false;
-        for (let wall of barriers) {
-          if (b.x > wall.x && b.x < wall.x + wall.w && b.y > wall.y && b.y < wall.y + wall.h) {
-            createExplosion(b.x, b.y, '#94a3b8');
-            bullets.splice(i, 1);
-            hit = true;
-            break;
-          }
-        }
-        if (hit) continue;
-
-        if (b.ownerIndex === 0 && Math.hypot(b.x - p2.x, b.y - p2.y) < p2.size / 2) {
-          createExplosion(p2.x, p2.y, '#ef4444');
-          bullets.splice(i, 1);
-          p2.health -= 25;
-          if (p2.health <= 0) {
-            setTankScores(prev => ({ ...prev, p1: prev.p1 + 1 }));
-            p1.health = 100; p2.health = 100;
-            p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
-          }
-        } else if (b.ownerIndex === 1 && Math.hypot(b.x - p1.x, b.y - p1.y) < p1.size / 2) {
-          createExplosion(p1.x, p1.y, '#38bdf8');
-          bullets.splice(i, 1);
-          p1.health -= 25;
-          if (p1.health <= 0) {
-            setTankScores(prev => ({ ...prev, p2: prev.p2 + 1 }));
-            p1.health = 100; p1.health = 100;
-            p1.x = 100; p1.y = 250; p2.x = 700; p2.y = 250;
-          }
-        } else {
-          ctx.shadowBlur = 10;
-          ctx.shadowColor = '#f59e0b';
-          ctx.fillStyle = '#fbbf24';
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
-        }
-      }
-
-      for (let i = particles.length - 1; i >= 0; i--) {
-        let p = particles[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.alpha -= 0.03;
-        if (p.alpha <= 0) {
-          particles.splice(i, 1);
-          continue;
-        }
-        ctx.fillStyle = p.color;
-        ctx.globalAlpha = p.alpha;
+      for (const bullet of bullets) {
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#f59e0b';
+        ctx.fillStyle = '#fbbf24';
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 1.0;
+        ctx.shadowBlur = 0;
       }
 
       animationFrameId = requestAnimationFrame(gameLoop);
@@ -471,19 +396,29 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
     return () => {
       socket.off('game_state', handleRemoteAction);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', releaseKeys);
+      delete window.triggerTankShoot;
+      delete window.setTouchKey;
       cancelAnimationFrame(animationFrameId);
     };
   }, [gameId, playerIndex, socket, roomId]);
   /* ========================================================== */
 
-  const sendAction = (action) => {
+  const sendAction = useCallback((action) => {
     if (!roomId) return;
     setActionError('');
     socket.emit('game_action', { gameRoomId: roomId, action });
-  };
+  }, [roomId, socket]);
 
   const getStatus = () => {
     if (!gameState && gameId !== 'tank-battle') return 'Setting up game...';
+    if (gameState?.status === 'finished' && gameState?.winner === 'BOTH') return 'Both players won! 🎉';
+    if (gameState?.status === 'finished' && gameState?.winner === 'GAME_OVER') return 'Game over';
+    if (gameId === 'red-light-green-light' && gameState?.status === 'playing') {
+      return gameState.phase === 'red' ? 'Red light — freeze!' : 'Green light — move!';
+    }
     if (gameId === 'tank-battle') return 'Tank Battle Arena Active 🎮';
     if (gameState?.winner === 'DRAW') return 'Draw game! 🤝';
     if (gameState?.winner !== null && gameState?.winner !== undefined) {
@@ -502,12 +437,12 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       </div>
 
       <div className="games-grid">
-        {GAME_LIST.map((game) => (
+        {GAMES.map((game) => (
           <div className="game-choice-card" key={game.id}>
             <div className="game-choice-icon">{game.icon}</div>
             <div className="game-choice-copy">
               <h4>{game.name}</h4>
-              <p>{game.desc}</p>
+              <p>{game.description}</p>
             </div>
             <button 
               className="game-invite-btn"
@@ -538,20 +473,28 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     <div className="connect-four-wrap">
       <div className="connect-four-drop-row">
         {Array.from({ length: 7 }, (_, column) => (
-          <button key={column} onClick={() => sendAction({ type: 'drop', column })} disabled={gameState?.currentPlayer !== playerIndex || gameState?.winner !== null}>↓</button>
+          <button
+            key={column}
+            aria-label={`Drop in column ${column + 1}`}
+            onClick={() => sendAction({ type: 'drop', column })}
+            disabled={gameState?.currentPlayer !== playerIndex || gameState?.winner !== null || Boolean(gameState?.board?.[column])}
+          >↓</button>
         ))}
       </div>
       <div className="connect-four-grid">
         {(gameState?.board || Array(42).fill(null)).map((cell, index) => (
-          <button
+          <div
             key={index}
             className={`connect-four-cell ${cell === 'X' ? 'disc-x' : ''} ${cell === 'O' ? 'disc-o' : ''}`}
-            onClick={() => sendAction({ type: 'drop', column: index % 7 })}
-            disabled={gameState?.currentPlayer !== playerIndex || gameState?.winner !== null}
+            role="img"
+            aria-label={`Row ${Math.floor(index / 7) + 1}, column ${index % 7 + 1}: ${cell ? `${cell} disc` : 'empty'}`}
           />
         ))}
       </div>
-      <div className="game-score-line"><span>🔴 You: X</span><span>🟡 Opponent: O</span></div>
+      <div className="game-score-line">
+        <span>🔴 You: {gameSession?.symbol || (playerIndex === 0 ? 'X' : 'O')}</span>
+        <span>🟡 Opponent: {playerIndex === 0 ? 'O' : 'X'}</span>
+      </div>
     </div>
   );
 
@@ -598,6 +541,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
             >{option}</button>
           ))}
         </div>
+        {gameState?.roundComplete && (
+          <button className="reset-game-btn" onClick={() => sendAction({ type: 'next-question' })}>
+            {gameState.questionIndex >= QUIZ_QUESTIONS.length - 1 ? 'Show final results' : 'Next question'}
+          </button>
+        )}
       </div>
     );
   };
@@ -633,36 +581,45 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
 
         <button 
-          ref={fireBtnRef}
           className="fire-btn-floating"
           type="button"
-          onTouchStart={(e) => { 
-            e.preventDefault(); 
-            if (window.setTouchKey) window.setTouchKey('touch_shoot', true); 
+          aria-label="Fire"
+          onPointerDown={(event) => {
+            event.preventDefault();
             if (window.triggerTankShoot) window.triggerTankShoot();
-          }}
-          onTouchEnd={(e) => { 
-            e.preventDefault(); 
-            if (window.setTouchKey) window.setTouchKey('touch_shoot', false); 
-          }}
-          onMouseDown={() => { 
-            if (window.setTouchKey) window.setTouchKey('touch_shoot', true); 
-            if (window.triggerTankShoot) window.triggerTankShoot();
-          }}
-          onMouseUp={() => { 
-            if (window.setTouchKey) window.setTouchKey('touch_shoot', false); 
           }}
         >
           🔥
         </button>
+        <div className="tank-dpad" aria-label="Tank movement controls">
+          {[
+            { key: 'left', label: '◀', name: 'Turn left' },
+            { key: 'forward', label: '▲', name: 'Move forward' },
+            { key: 'backward', label: '▼', name: 'Move backward' },
+            { key: 'right', label: '▶', name: 'Turn right' }
+          ].map(control => (
+            <button
+              type="button"
+              className={`tank-control tank-control-${control.key}`}
+              key={control.key}
+              aria-label={control.name}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                if (window.setTouchKey) window.setTouchKey(control.key, true);
+              }}
+              onPointerUp={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
+              onPointerCancel={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
+              onPointerLeave={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
+            >{control.label}</button>
+          ))}
+        </div>
       </div>
 
-      <button className="fullscreen-btn" onClick={toggleFullScreen}>
-        📺 Full Screen (Landscape Mode)
-      </button>
+      <GameFullscreenButton targetRef={tankWrapRef} />
 
       <p className="tank-controls-tip">
-        👉 Tap to Shoot & Pause Rotation | Hold to Drive Straight!
+        WASD / arrows to drive · Space or 🔥 to fire
       </p>
     </div>
   );
@@ -677,6 +634,12 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       case 'quiz-battle': return renderQuiz();
       case 'word-chain': return renderWordChain();
       case 'tank-battle': return renderTankBattle();
+      case 'red-light-green-light': return (
+        <RedLightGreenLight gameState={gameState} playerIndex={playerIndex} onAction={sendAction} onClose={onClose} />
+      );
+      case 'glass-bridge': return (
+        <GlassBridge gameState={gameState} playerIndex={playerIndex} onAction={sendAction} onClose={onClose} />
+      );
       default: return renderTicTacToe();
     }
   };
@@ -689,7 +652,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           <button className="close-game-btn" onClick={onClose}>✕</button>
         </div>
 
-        {gameId && (
+        {gameId && !['red-light-green-light', 'glass-bridge'].includes(gameId) && (
           <div className="game-status-bar">
             <p>{getStatus()}</p>
             <span className="symbol-badge">You: {playerIndex === 0 ? 'P1' : 'P2'}</span>
@@ -699,7 +662,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         {actionError && <p className="game-action-error">{actionError}</p>}
         {renderGame()}
 
-        {gameId && (
+        {gameId && !['red-light-green-light', 'glass-bridge'].includes(gameId) && (
           <div className="game-footer">
             <button className="reset-game-btn" onClick={() => sendAction({ type: 'restart' })}>Restart Game</button>
             <span className="game-opponent-label">Playing with {activeChat?.name || 'your friend'}</span>

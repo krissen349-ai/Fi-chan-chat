@@ -627,6 +627,14 @@ function App() {
     alert(`${gameName || 'Game'} request was declined. ❌`);
   };
 
+  const handleGameInviteError = ({ message } = {}) => {
+    alert(message || 'The game invitation could not be sent.');
+  };
+
+  const handleGameInviteSent = ({ gameName } = {}) => {
+    alert(`${gameName || 'Game'} invite sent! 🎮`);
+  };
+
   // --- 1. ATTACH ALL SOCKET LISTENERS (ONCE) ---
   socket.on("update_users", handleUsersUpdate);
   socket.on("update_groups", handleGroupsUpdate);
@@ -641,6 +649,8 @@ function App() {
   socket.on("receive_game_invite", handleReceiveGameInvite);
   socket.on("game_started", handleGameStarted);
   socket.on("game_invite_rejected", handleGameInviteRejected);
+  socket.on("game_invite_error", handleGameInviteError);
+  socket.on("game_invite_sent", handleGameInviteSent);
 
   // --- 2. SINGLE CLEANUP RETURN FUNCTION ---
   return () => {
@@ -657,6 +667,8 @@ function App() {
     socket.off("receive_game_invite", handleReceiveGameInvite);
     socket.off("game_started", handleGameStarted);
     socket.off("game_invite_rejected", handleGameInviteRejected);
+    socket.off("game_invite_error", handleGameInviteError);
+    socket.off("game_invite_sent", handleGameInviteSent);
   };
 }, [activeChat]);
 
@@ -1172,18 +1184,15 @@ function App() {
   const sendGameInvite = (game) => {
     const targetUserId = activeChat?.userObj?.uid || activeChat?.userObj?.id;
     if (!targetUserId) return alert('This chat partner is not available for a game invite.');
-    const gameRoomId = `game_${activeChat.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     socket.emit('send_game_invite', {
       toUserId: targetUserId,
       senderName: currentUser?.username || 'Friend',
       chatId: activeChat.id,
       gameId: game.id,
-      gameName: game.name,
-      gameRoomId
+      gameName: game.name
     });
     setShowGamesLobby(false);
-    alert(`${game.name} invite sent! 🎮`);
   };
 
   const handleQuickPlay = () => {
@@ -1194,10 +1203,6 @@ function App() {
   const handleAcceptInvite = () => {
     if (!gameInvite) return;
     socket.emit('accept_game_invite', {
-      chatId: gameInvite.chatId,
-      fromUserId: gameInvite.fromUserId,
-      gameId: gameInvite.gameId,
-      gameName: gameInvite.gameName,
       gameRoomId: gameInvite.gameRoomId
     });
     setGameInvite(null);
@@ -1207,8 +1212,7 @@ function App() {
   const handleRejectInvite = () => {
     if (!gameInvite) return;
     socket.emit('reject_game_invite', {
-      fromUserId: gameInvite.fromUserId,
-      gameName: gameInvite.gameName
+      gameRoomId: gameInvite.gameRoomId
     });
     setGameInvite(null);
   };
@@ -2101,7 +2105,10 @@ function App() {
     activeChat={activeChat}
     gameSession={gameSession}
     currentUser={currentUser}
-    onClose={() => setGameSession(null)}
+    onClose={() => {
+      socket.emit('leave_game', { gameRoomId: gameSession.gameRoomId });
+      setGameSession(null);
+    }}
   />
 )}
 

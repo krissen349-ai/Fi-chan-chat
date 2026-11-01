@@ -10,6 +10,18 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer'); 
 const admin = require('firebase-admin');
+const { randomUUID } = require('crypto');
+const {
+    GLASS_BRIDGE,
+    RED_LIGHT_GREEN_LIGHT,
+    advanceGlassBridgeState,
+    advanceRedLightState,
+    createSurvivalState,
+    getPublicSurvivalState,
+    setGlassBridgeInput,
+    setRedLightInput,
+    startRematch
+} = require('./games/survivalGames');
 
 const app = express();
 app.use(cors());
@@ -132,6 +144,26 @@ let users = {};
 let groups = [ { id: "global-group", name: "Global Group", description: "Active Session Stream", createdBy: "System" } ];
 let messages = {}; 
 let activeGames = {}; // 🎮 Game state store karne ke liye
+const pendingGameInvites = new Map();
+const pendingGameInvitesByChat = new Map();
+const activeGamesByChat = new Map();
+const activeGamesByUser = new Map();
+
+const SUPPORTED_GAME_IDS = new Set([
+    'tic-tac-toe',
+    'connect-four',
+    'rock-paper-scissors',
+    'quiz-battle',
+    'word-chain',
+    'tank-battle',
+    RED_LIGHT_GREEN_LIGHT,
+    GLASS_BRIDGE
+]);
+const TANK_WALLS = [
+    { x: 180, y: 120, w: 60, h: 220 },
+    { x: 560, y: 160, w: 60, h: 220 },
+    { x: 330, y: 210, w: 140, h: 80 }
+];
 
 // Tic-Tac-Toe Winner Checker Helper
 function checkWinner(board) {
@@ -171,7 +203,20 @@ function createGameState(gameId) {
         return { gameId, words: [], currentPlayer: 0, winner: null };
     }
     if (gameId === 'tank-battle') {
-        return { gameId, scores: { p1: 0, p2: 0 }, winner: null };
+        return {
+            gameId,
+            scores: [0, 0],
+            tanks: [
+                { x: 100, y: 250, angle: 0, health: 100 },
+                { x: 700, y: 250, angle: Math.PI, health: 100 }
+            ],
+            bullets: [],
+            lastMoveAt: [0, 0],
+            lastFireAt: [0, 0],
+            nextBulletId: 1,
+            lastTickAt: Date.now(),
+            winner: null
+        };
     }
     return { gameId: 'tic-tac-toe', board: Array(9).fill(null), currentPlayer: 0, winner: null };
 }
@@ -201,7 +246,75 @@ function checkConnectFourWinner(board) {
     return board.every(Boolean) ? 'DRAW' : null;
 }
 
+function tankPositionBlocked(x, y) {
+    const halfSize = 16;
+    if (x < halfSize || x > 800 - halfSize || y < halfSize || y > 500 - halfSize) return true;
+    return TANK_WALLS.some(wall =>
+        x + halfSize > wall.x && x - halfSize < wall.x + wall.w &&
+        y + halfSize > wall.y && y - halfSize < wall.y + wall.h
+    );
+}
+
+function advanceTankBattle(game, now) {
+    const state = game.state;
+    const elapsed = Math.min(0.1, Math.max(0, (now - state.lastTickAt) / 1000));
+    state.lastTickAt = now;
+    let changed = false;
+    let respawned = false;
+
+    state.bullets = state.bullets.filter(bullet => {
+      if (respawned) return false;
+        bullet.x += bullet.vx * elapsed;
+        bullet.y += bullet.vy * elapsed;
+        if (bullet.x < 0 || bullet.x > 800 || bullet.y < 0 || bullet.y > 500) {
+            changed = true;
+            return false;
+        }
+
+        const hitWall = TANK_WALLS.some(wall =>
+            bullet.x > wall.x && bullet.x < wall.x + wall.w &&
+            bullet.y > wall.y && bullet.y < wall.y + wall.h
+        );
+        if (hitWall) {
+            changed = true;
+            return false;
+        }
+
+        const targetIndex = 1 - bullet.ownerIndex;
+        const target = state.tanks[targetIndex];
+        if (Math.hypot(bullet.x - target.x, bullet.y - target.y) < 18) {
+            target.health -= 25;
+            changed = true;
+            if (target.health <= 0) {
+                state.scores[bullet.ownerIndex] += 1;
+                state.tanks[0] = { x: 100, y: 250, angle: 0, health: 100 };
+                state.tanks[1] = { x: 700, y: 250, angle: Math.PI, health: 100 };
+                respawned = true;
+            }
+            return false;
+        }
+        changed = true;
+        return true;
+    });
+
+    return changed;
+}
+
 function getGamePublicState(game) {
+    if (game.gameId === RED_LIGHT_GREEN_LIGHT || game.gameId === GLASS_BRIDGE) {
+        return getPublicSurvivalState(game.state);
+    }
+    if (game.gameId === 'tank-battle') {
+        return {
+            gameId: game.gameId,
+            scores: [...game.state.scores],
+            tanks: game.state.tanks.map(tank => ({ ...tank })),
+            bullets: game.state.bullets.map(bullet => ({ ...bullet })),
+            winner: game.state.winner,
+            players: game.players.length
+        };
+    }
+
     const publicState = { ...game.state, players: game.players.length };
     if (game.gameId === 'rock-paper-scissors' && !game.state.roundComplete) {
         publicState.choices = [null, null];
@@ -212,6 +325,42 @@ function getGamePublicState(game) {
     }
     return publicState;
 }
+
+function findGamePlayerIndex(game, socket) {
+    return game.players.findIndex(player => player.socketId === socket.id);
+}
+
+function broadcastGameState(game) {
+    io.to(game.gameRoomId).emit('game_state', {
+        gameRoomId: game.gameRoomId,
+        ...getGamePublicState(game)
+    });
+}
+
+setInterval(() => {
+    const now = Date.now();
+    Object.values(activeGames).forEach(game => {
+        if (game.gameId === 'tank-battle') {
+            if (advanceTankBattle(game, now)) broadcastGameState(game);
+            return;
+        }
+        if (game.gameId !== RED_LIGHT_GREEN_LIGHT && game.gameId !== GLASS_BRIDGE) return;
+        const changed = game.gameId === RED_LIGHT_GREEN_LIGHT
+            ? advanceRedLightState(game.state, now)
+            : advanceGlassBridgeState(game.state, now);
+        if (changed || now - game.state.lastBroadcastAt >= 100) {
+            game.state.lastBroadcastAt = now;
+            broadcastGameState(game);
+        }
+    });
+
+    for (const [roomId, invite] of pendingGameInvites) {
+        if (now - invite.createdAt > 60000) {
+            pendingGameInvites.delete(roomId);
+            pendingGameInvitesByChat.delete(`${invite.chatId}:${invite.gameId}`);
+        }
+    }
+}, 50);
 
 // 🔌 Socket.IO Event Handlers
 io.on('connection', (socket) => {
@@ -240,7 +389,25 @@ io.on('connection', (socket) => {
         const uid = verifiedUid || publicUserData.uid;
         users[socket.id] = { ...publicUserData, uid, verifiedUid, id: socket.id, online: true };
 
-        if (uid) socket.join(uid);
+        if (uid) {
+            socket.join(uid);
+            Object.values(activeGames).forEach(game => {
+                const playerIndex = game.players.findIndex(player => player.uid === uid);
+                if (playerIndex < 0) return;
+                game.players[playerIndex].socketId = socket.id;
+                const playerState = game.state.players?.[playerIndex];
+                if (playerState?.disconnectedUntil) playerState.disconnectedUntil = null;
+                socket.join(game.gameRoomId);
+                socket.emit('game_started', {
+                    gameRoomId: game.gameRoomId,
+                    gameId: game.gameId,
+                    gameName: game.gameName,
+                    playerIndex,
+                    symbol: game.players[playerIndex].symbol,
+                    state: getGamePublicState(game)
+                });
+            });
+        }
 
         io.emit('update_users', Object.values(users));
         io.emit('update_groups', groups);
@@ -284,60 +451,106 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 🎮 GAME INVITE & TIC-TAC-TOE EVENTS SYSTEM
-    
-    // 1. Send Game Invite
-    socket.on('send_game_invite', ({ toUserId, senderName, chatId, gameId, gameName, gameRoomId }) => {
-        io.to(toUserId).emit('receive_game_invite', {
-            fromUserId: socket.id,
-            senderName: senderName || 'Friend',
+    // 🎮 Private two-player game invitations and sessions
+    socket.on('send_game_invite', (data = {}) => {
+        const sender = users[socket.id];
+        const targetUid = String(data.toUserId || '');
+        const chatId = String(data.chatId || '');
+        const gameId = String(data.gameId || 'tic-tac-toe');
+        const pairChatId = [sender?.uid, targetUid].sort().join('--');
+        const inviteKey = `${chatId}:${gameId}`;
+
+        if (!sender?.uid || !targetUid || targetUid === sender.uid || !SUPPORTED_GAME_IDS.has(gameId) || chatId !== pairChatId) {
+            socket.emit('game_invite_error', { message: 'Game invitations are available only between the two users in a private chat.' });
+            return;
+        }
+        if (!users[socket.id] || !Object.values(users).some(user => user.uid === targetUid)) {
+            socket.emit('game_invite_error', { message: 'Your chat partner is offline.' });
+            return;
+        }
+        if (activeGamesByChat.has(chatId) || activeGamesByUser.has(sender.uid) || activeGamesByUser.has(targetUid) ||
+            pendingGameInvitesByChat.has(inviteKey)) {
+            socket.emit('game_invite_error', { message: 'One of the players already has an active game or invitation.' });
+            return;
+        }
+
+        const gameRoomId = `game_${randomUUID()}`;
+        const invite = {
+            gameRoomId,
+            gameId,
+            gameName: String(data.gameName || gameId).slice(0, 40),
             chatId,
-            gameId: gameId || 'tic-tac-toe',
-            gameName: gameName || 'Tic-Tac-Toe',
-            gameRoomId: gameRoomId || `game_${chatId}_${Date.now()}`
+            fromUid: sender.uid,
+            senderSocketId: socket.id,
+            senderName: String(sender.username || 'Friend').slice(0, 40),
+            toUid: targetUid,
+            createdAt: Date.now()
+        };
+        pendingGameInvites.set(gameRoomId, invite);
+        pendingGameInvitesByChat.set(inviteKey, gameRoomId);
+        io.to(targetUid).emit('receive_game_invite', {
+            fromUserId: socket.id,
+            fromUid: sender.uid,
+            senderName: invite.senderName,
+            chatId,
+            gameId,
+            gameName: invite.gameName,
+            gameRoomId
         });
+        socket.emit('game_invite_sent', { gameRoomId, gameName: invite.gameName });
     });
 
-    // 2. Accept Game Invite (Tank Battle & Naye Games Allowed Here)
-    socket.on('accept_game_invite', ({ chatId, fromUserId, gameId, gameName, gameRoomId }) => {
-        const allowedGames = [
-            'tic-tac-toe', 
-            'connect-four', 
-            'rock-paper-scissors', 
-            'quiz-battle', 
-            'word-chain',
-            'tank-battle',
-            'penalty-shootout',
-            'stickman-run',
-            'sword-duel'
-        ];
-        const selectedGameId = allowedGames.includes(gameId) ? gameId : 'tic-tac-toe';
-        const selectedGameName = String(gameName || 'Tic-Tac-Toe').slice(0, 40);
-        const roomId = typeof gameRoomId === 'string' && gameRoomId.length < 180
-            ? gameRoomId
-            : `game_${chatId}_${Date.now()}`;
-        const senderSocket = io.sockets.sockets.get(fromUserId);
-        if (!senderSocket || fromUserId === socket.id) return;
+    socket.on('accept_game_invite', ({ gameRoomId } = {}) => {
+        const recipient = users[socket.id];
+        const invite = pendingGameInvites.get(gameRoomId);
+        if (!recipient?.uid || !invite || invite.toUid !== recipient.uid) {
+            socket.emit('game_invite_error', { message: 'This invitation is no longer available.' });
+            return;
+        }
+        if (activeGamesByChat.has(invite.chatId) || activeGamesByUser.has(recipient.uid) || activeGamesByUser.has(invite.fromUid)) {
+            pendingGameInvites.delete(gameRoomId);
+            pendingGameInvitesByChat.delete(`${invite.chatId}:${invite.gameId}`);
+            socket.emit('game_invite_error', { message: 'One of the players is already in a game.' });
+            return;
+        }
+
+        const senderSocketId = Object.keys(users).find(socketId => users[socketId].uid === invite.fromUid);
+        const senderSocket = senderSocketId && io.sockets.sockets.get(senderSocketId);
+        if (!senderSocket) {
+            socket.emit('game_invite_error', { message: 'The person who invited you is offline.' });
+            return;
+        }
 
         const game = {
-            gameRoomId: roomId,
-            gameId: selectedGameId,
-            gameName: selectedGameName,
+            gameRoomId: invite.gameRoomId,
+            gameId: invite.gameId,
+            gameName: invite.gameName,
+            chatId: invite.chatId,
             players: [
-                { socketId: fromUserId, symbol: 'X' },
-                { socketId: socket.id, symbol: 'O' }
+                { uid: invite.fromUid, socketId: senderSocketId, username: invite.senderName, symbol: 'X' },
+                { uid: recipient.uid, socketId: socket.id, username: String(recipient.username || 'Player').slice(0, 40), symbol: 'O' }
             ],
-            state: createGameState(selectedGameId)
+            state: invite.gameId === RED_LIGHT_GREEN_LIGHT || invite.gameId === GLASS_BRIDGE
+                ? createSurvivalState(invite.gameId, [
+                    { username: invite.senderName },
+                    { username: String(recipient.username || 'Player').slice(0, 40) }
+                ])
+                : createGameState(invite.gameId)
         };
-        activeGames[roomId] = game;
-        senderSocket.join(roomId);
-        socket.join(roomId);
+        activeGames[game.gameRoomId] = game;
+        activeGamesByChat.set(invite.chatId, game.gameRoomId);
+        activeGamesByUser.set(invite.fromUid, game.gameRoomId);
+        activeGamesByUser.set(recipient.uid, game.gameRoomId);
+        pendingGameInvites.delete(gameRoomId);
+        pendingGameInvitesByChat.delete(`${invite.chatId}:${invite.gameId}`);
+        senderSocket.join(game.gameRoomId);
+        socket.join(game.gameRoomId);
 
         game.players.forEach((player, playerIndex) => {
             io.to(player.socketId).emit('game_started', {
-                gameRoomId: roomId,
-                gameId: selectedGameId,
-                gameName: selectedGameName,
+                gameRoomId: game.gameRoomId,
+                gameId: game.gameId,
+                gameName: game.gameName,
                 playerIndex,
                 symbol: player.symbol,
                 state: getGamePublicState(game)
@@ -345,9 +558,13 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 3. Reject Game Invite
-    socket.on('reject_game_invite', ({ fromUserId, gameName }) => {
-        io.to(fromUserId).emit('game_invite_rejected', { gameName: gameName || 'Game' });
+    socket.on('reject_game_invite', ({ gameRoomId } = {}) => {
+        const recipient = users[socket.id];
+        const invite = pendingGameInvites.get(gameRoomId);
+        if (!recipient?.uid || !invite || invite.toUid !== recipient.uid) return;
+        pendingGameInvites.delete(gameRoomId);
+        pendingGameInvitesByChat.delete(`${invite.chatId}:${invite.gameId}`);
+        io.to(invite.fromUid).emit('game_invite_rejected', { gameName: invite.gameName });
     });
 
     socket.on('join_game', ({ gameRoomId } = {}) => {
@@ -356,21 +573,101 @@ io.on('connection', (socket) => {
             socket.emit('game_session_missing', { gameRoomId });
             return;
         }
-        if (!game.players.some(player => player.socketId === socket.id)) return;
+        let playerIndex = findGamePlayerIndex(game, socket);
+        const uid = users[socket.id]?.uid;
+        if (playerIndex < 0 && uid) {
+            playerIndex = game.players.findIndex(player => player.uid === uid);
+            if (playerIndex >= 0) game.players[playerIndex].socketId = socket.id;
+        }
+        if (playerIndex < 0) return;
+        const gamePlayer = game.state.players?.[playerIndex];
+        if (gamePlayer?.disconnectedUntil) gamePlayer.disconnectedUntil = null;
         socket.join(gameRoomId);
         socket.emit('game_state', { gameRoomId, ...getGamePublicState(game) });
+        socket.to(gameRoomId).emit('game_player_reconnected', { playerIndex });
+    });
+
+    socket.on('leave_game', ({ gameRoomId } = {}) => {
+        const game = activeGames[gameRoomId];
+        if (!game || findGamePlayerIndex(game, socket) < 0) return;
+        socket.to(gameRoomId).emit('game_opponent_left', { gameRoomId });
+        delete activeGames[gameRoomId];
+        activeGamesByChat.delete(game.chatId);
+        game.players.forEach(player => {
+            if (activeGamesByUser.get(player.uid) === gameRoomId) activeGamesByUser.delete(player.uid);
+        });
     });
 
     // 4. Game Move Handlers
     socket.on('game_action', ({ gameRoomId, action } = {}) => {
         const game = activeGames[gameRoomId];
         if (!game || !action || typeof action.type !== 'string') return;
-        const playerIndex = game.players.findIndex(player => player.socketId === socket.id);
+        const playerIndex = findGamePlayerIndex(game, socket);
         if (playerIndex < 0) return;
 
-        // 🕹️ Tank Battle Real-time Actions Handler (Move & Shoot Sync)
+        if (game.gameId === RED_LIGHT_GREEN_LIGHT || game.gameId === GLASS_BRIDGE) {
+            const state = game.state;
+            let accepted = false;
+
+            if (action.type === 'rematch-request' && state.status === 'finished' && !state.rematchDeclined) {
+                state.rematchRequests[playerIndex] = true;
+                accepted = true;
+                if (state.rematchRequests.every(Boolean)) {
+                    game.state = startRematch(game, Date.now());
+                }
+            } else if (action.type === 'rematch-decline' && state.status === 'finished' && !state.rematchDeclined) {
+                state.rematchDeclined = true;
+                state.rematchRequests = [false, false];
+                accepted = true;
+            } else if (game.gameId === RED_LIGHT_GREEN_LIGHT && action.type === 'move') {
+                accepted = setRedLightInput(state, playerIndex, action.axis);
+            } else if (game.gameId === GLASS_BRIDGE) {
+                accepted = setGlassBridgeInput(state, playerIndex, action);
+            }
+
+            if (!accepted) {
+                socket.emit('game_action_error', { gameRoomId, message: 'That move is not available in the current game state.' });
+                return;
+            }
+            broadcastGameState(game);
+            return;
+        }
+
         if (game.gameId === 'tank-battle' && (action.type === 'tank_move' || action.type === 'tank_shoot')) {
-            socket.to(gameRoomId).emit('game_state', { gameRoomId, action });
+            const state = game.state;
+            const now = Date.now();
+            if (action.type === 'tank_move') {
+                if (now - state.lastMoveAt[playerIndex] < 40) return;
+                const nextX = Number(action.x);
+                const nextY = Number(action.y);
+                const nextAngle = Number(action.angle);
+                const tank = state.tanks[playerIndex];
+                const opponentTank = state.tanks[1 - playerIndex];
+                const angleDelta = Math.atan2(Math.sin(nextAngle - tank.angle), Math.cos(nextAngle - tank.angle));
+                if (!Number.isFinite(nextX) || !Number.isFinite(nextY) || !Number.isFinite(nextAngle) ||
+                    Math.hypot(nextX - tank.x, nextY - tank.y) > 10 || Math.abs(angleDelta) > 0.2 ||
+                    tankPositionBlocked(nextX, nextY) || Math.hypot(nextX - opponentTank.x, nextY - opponentTank.y) < 32) {
+                    socket.emit('game_action_error', { gameRoomId, message: 'Tank movement was outside the arena or too fast.' });
+                    return;
+                }
+                tank.x = nextX;
+                tank.y = nextY;
+                tank.angle = nextAngle;
+                state.lastMoveAt[playerIndex] = now;
+            } else {
+                if (now - state.lastFireAt[playerIndex] < 300) return;
+                const tank = state.tanks[playerIndex];
+                state.bullets.push({
+                    id: state.nextBulletId++,
+                    ownerIndex: playerIndex,
+                    x: tank.x + Math.cos(tank.angle) * 30,
+                    y: tank.y + Math.sin(tank.angle) * 30,
+                    vx: Math.cos(tank.angle) * 510,
+                    vy: Math.sin(tank.angle) * 510
+                });
+                state.lastFireAt[playerIndex] = now;
+            }
+            broadcastGameState(game);
             return;
         }
 
@@ -385,23 +682,27 @@ io.on('connection', (socket) => {
 
         if (game.gameId === 'tic-tac-toe' && action.type === 'place') {
             const index = Number(action.index);
-            if (state.currentPlayer !== playerIndex || !Number.isInteger(index) || index < 0 || index > 8 || state.board[index]) return;
+            if (state.currentPlayer !== playerIndex) return reject('Wait for your turn.');
+            if (!Number.isInteger(index) || index < 0 || index > 8 || state.board[index]) return reject('That square is unavailable.');
             state.board[index] = game.players[playerIndex].symbol;
             state.winner = checkWinner(state.board);
             if (state.winner === 'DRAW') state.winner = 'DRAW';
             if (!state.winner) state.currentPlayer = 1 - playerIndex;
         } else if (game.gameId === 'connect-four' && action.type === 'drop') {
             const column = Number(action.column);
-            if (state.currentPlayer !== playerIndex || !Number.isInteger(column) || column < 0 || column > 6) return;
+            if (state.currentPlayer !== playerIndex) return reject('Wait for your turn.');
+            if (!Number.isInteger(column) || column < 0 || column > 6) return reject('Choose a valid column.');
             let row = 5;
             while (row >= 0 && state.board[row * 7 + column]) row -= 1;
-            if (row < 0) return;
+            if (row < 0) return reject('That column is full.');
             state.board[row * 7 + column] = game.players[playerIndex].symbol;
             state.winner = checkConnectFourWinner(state.board);
             if (!state.winner) state.currentPlayer = 1 - playerIndex;
         } else if (game.gameId === 'rock-paper-scissors' && action.type === 'choose') {
             const choice = action.choice;
-            if (!['rock', 'paper', 'scissors'].includes(choice) || state.roundComplete || state.choices[playerIndex]) return;
+            if (!['rock', 'paper', 'scissors'].includes(choice) || state.roundComplete || state.choices[playerIndex]) {
+                return reject('Your choice has already been recorded or is invalid.');
+            }
             state.choices[playerIndex] = choice;
             state.pending[playerIndex] = true;
             if (state.choices.every(Boolean)) {
@@ -424,7 +725,9 @@ io.on('connection', (socket) => {
         } else if (game.gameId === 'quiz-battle' && action.type === 'answer') {
             const answerIndex = Number(action.answerIndex);
             const question = QUIZ_QUESTIONS[state.questionIndex];
-            if (!question || state.roundComplete || state.answers[playerIndex] !== null || !Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= question.options.length) return;
+            if (!question || state.roundComplete || state.answers[playerIndex] !== null || !Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex >= question.options.length) {
+                return reject('Your answer was already submitted or is invalid.');
+            }
             state.answers[playerIndex] = answerIndex;
             if (state.answers.every(answer => answer !== null)) {
                 state.correctAnswer = question.answer;
@@ -678,6 +981,26 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        const disconnectedUser = users[socket.id];
+        if (disconnectedUser?.uid) {
+            Object.values(activeGames).forEach(game => {
+                const playerIndex = game.players.findIndex(player =>
+                    player.uid === disconnectedUser.uid && player.socketId === socket.id
+                );
+                if (playerIndex < 0) return;
+                game.players[playerIndex].socketId = null;
+                if (game.gameId === RED_LIGHT_GREEN_LIGHT) {
+                    game.state.inputs[playerIndex] = 0;
+                    game.state.players[playerIndex].disconnectedUntil = Date.now() + 30000;
+                    broadcastGameState(game);
+                } else if (game.gameId === GLASS_BRIDGE) {
+                    const player = game.state.players[playerIndex];
+                    player.input = { x: 0, z: 0, sprint: false };
+                    player.disconnectedUntil = Date.now() + 30000;
+                    broadcastGameState(game);
+                }
+            });
+        }
         delete users[socket.id];
         io.emit('update_users', Object.values(users));
         console.log(`User disconnected: ${socket.id}`);

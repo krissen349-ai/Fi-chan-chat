@@ -1,18 +1,6 @@
 import React from 'react';
 import './GameModal.css';
-
-const GAMES = [
-  // Purane 5 Games
-  { id: 'tic-tac-toe', icon: '⭕', name: 'Tic-Tac-Toe', description: 'Classic three-in-a-row duel' },
-  { id: 'connect-four', icon: '🔴', name: 'Connect Four', description: 'Drop four discs in a row' },
-  { id: 'rock-paper-scissors', icon: '✊', name: 'Rock Paper Scissors', description: 'Quick best-of-three battle' },
-  { id: 'quiz-battle', icon: '🧠', name: 'Quiz Battle', description: 'Race to the right answers' },
-  { id: 'word-chain', icon: '🔤', name: 'Word Chain', description: 'Keep the word game going' },
-  
-  // Stickman Party Style Naye  Games
-  { id: 'tank-battle', icon: '🕹️', name: 'Tank Battle', description: '1v1 tank showdown & tactical blasts' },
-
-];
+import { GAMES } from './games/gameCatalog';
 
 const GamesLobby = ({ onClose, onInvite, onQuickPlay }) => (
   <div className="modal-overlay">
