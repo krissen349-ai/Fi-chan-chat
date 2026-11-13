@@ -25,6 +25,7 @@ const {
 const {
     advanceTank,
     createTankInput,
+    createTankVolley,
     segmentDistanceToPoint,
     segmentIntersectsWall,
     TANK_WALLS
@@ -213,6 +214,7 @@ function createGameState(gameId) {
             ],
             inputs: [createTankInput(), createTankInput()],
             lastInputAt: [Date.now(), Date.now()],
+            rotationLockedUntil: [0, 0],
             bullets: [],
             lastFireAt: [0, 0],
             nextBulletId: 1,
@@ -260,10 +262,13 @@ function advanceTankBattle(game, now) {
             state.inputs[index] = createTankInput();
             state.lastInputAt[index] = now;
         }
+        const effectiveInput = now < state.rotationLockedUntil[index]
+            ? { ...input, autoRotate: false, turn: 0 }
+            : input;
         changed = advanceTank(
             state.tanks[index],
             state.tanks[1 - index],
-            state.inputs[index],
+            effectiveInput,
             elapsed
         ) || changed;
     });
@@ -656,14 +661,13 @@ io.on('connection', (socket) => {
             } else {
                 if (now - state.lastFireAt[playerIndex] < 300) return;
                 const tank = state.tanks[playerIndex];
-                state.bullets.push({
-                    id: state.nextBulletId++,
-                    ownerIndex: playerIndex,
-                    x: tank.x + Math.cos(tank.angle) * 30,
-                    y: tank.y + Math.sin(tank.angle) * 30,
-                    vx: Math.cos(tank.angle) * 510,
-                    vy: Math.sin(tank.angle) * 510
-                });
+                const requestedAngle = Number(action.angle);
+                if (!Number.isFinite(requestedAngle)) return;
+                const angle = Math.atan2(Math.sin(requestedAngle), Math.cos(requestedAngle));
+                tank.angle = angle;
+                state.bullets.push(...createTankVolley(tank, angle, playerIndex, state.nextBulletId));
+                state.nextBulletId += 2;
+                state.rotationLockedUntil[playerIndex] = now + 2000;
                 state.lastFireAt[playerIndex] = now;
             }
             broadcastGameState(game);

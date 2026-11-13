@@ -161,6 +161,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     const AUTO_ROTATION_SPEED = 0.055;
     const MOVE_SPEED = 3.2;
     const lastNetworkUpdateRef = { current: 0 };
+    let rotationPausedUntil = 0;
     let lastFrameTime = performance.now();
 
     const pointerState = {
@@ -196,7 +197,13 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         const moveStep = this.speed * frameScale;
         const rotateStep = this.rotSpeed * frameScale;
 
-        if (!pointerState.pointerDown && !pointerState.holdActive && !controls.left && !controls.right) {
+        if (
+          performance.now() >= rotationPausedUntil &&
+          !pointerState.pointerDown &&
+          !pointerState.holdActive &&
+          !controls.left &&
+          !controls.right
+        ) {
           this.angle += rotateStep;
         }
 
@@ -215,7 +222,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           }
         }
 
-        if (controls.left || controls.right) {
+        if (performance.now() >= rotationPausedUntil && (controls.left || controls.right)) {
           this.angle += controls.left ? -rotateStep * 1.5 : rotateStep * 1.5;
         }
 
@@ -361,10 +368,14 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       const me = playerIndex === 0 ? p1 : p2;
       if (me.cooldown > 0) return;
       me.muzzleFlash = 4;
+      rotationPausedUntil = performance.now() + 2000;
       soundFX.playShoot();
 
       if (socket && roomId) {
-        socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot' } });
+        socket.emit('game_action', {
+          gameRoomId: roomId,
+          action: { type: 'tank_shoot', angle: me.angle }
+        });
       }
       me.cooldown = 20;
     };
@@ -426,8 +437,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
       const input = {
         move: pointerState.holdActive ? 1 : controls.forward ? 1 : controls.backward ? -1 : 0,
-        turn: controls.left ? -1 : controls.right ? 1 : 0,
-        autoRotate: !pointerState.pointerDown && !controls.left && !controls.right
+        turn: now < rotationPausedUntil ? 0 : controls.left ? -1 : controls.right ? 1 : 0,
+        autoRotate: now >= rotationPausedUntil &&
+          !pointerState.pointerDown && !controls.left && !controls.right
       };
       const inputSignature = `${input.move}:${input.turn}:${input.autoRotate}`;
       if (socket && roomId && (

@@ -44,6 +44,22 @@ function createTankInput() {
   return { move: 0, turn: 0, autoRotate: true };
 }
 
+function createTankVolley(tank, angle, ownerIndex, firstBulletId) {
+  const directionX = Math.cos(angle);
+  const directionY = Math.sin(angle);
+  const lateralX = -directionY * 5;
+  const lateralY = directionX * 5;
+
+  return [-1, 1].map((side, index) => ({
+    id: firstBulletId + index,
+    ownerIndex,
+    x: tank.x + directionX * 30 + lateralX * side,
+    y: tank.y + directionY * 30 + lateralY * side,
+    vx: directionX * 510,
+    vy: directionY * 510
+  }));
+}
+
 function advanceTank(tank, opponentTank, input, elapsedSeconds) {
   const dt = Math.min(0.1, Math.max(0, elapsedSeconds));
   const move = Math.max(-1, Math.min(1, Number(input.move) || 0));
@@ -76,6 +92,7 @@ function advanceTank(tank, opponentTank, input, elapsedSeconds) {
 module.exports = {
   advanceTank,
   createTankInput,
+  createTankVolley,
   segmentDistanceToPoint,
   segmentIntersectsWall,
   tankPositionBlocked,
