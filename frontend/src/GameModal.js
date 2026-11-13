@@ -146,11 +146,15 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     let animationFrameId;
     let keys = {};
     let bullets = [];
+    let impactParticles = [];
     let trackMarks = [];
     let barriers = [
-      { x: 180, y: 120, w: 60, h: 220 },
-      { x: 560, y: 160, w: 60, h: 220 },
-      { x: 330, y: 210, w: 140, h: 80 }
+      { x: 180, y: 90, w: 70, h: 105 },
+      { x: 180, y: 305, w: 70, h: 105 },
+      { x: 550, y: 90, w: 70, h: 105 },
+      { x: 550, y: 305, w: 70, h: 105 },
+      { x: 345, y: 130, w: 45, h: 80 },
+      { x: 410, y: 290, w: 45, h: 80 }
     ];
     const HOLD_THRESHOLD_MS = 160;
     const AUTO_ROTATION_SPEED = 0.055;
@@ -290,24 +294,21 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     const p1 = new Tank(100, 250, '#0284c7', '#38bdf8', 0, playerIndex === 0);
     const p2 = new Tank(700, 250, '#dc2626', '#f87171', Math.PI, playerIndex === 1);
 
-    const handleRemoteAction = (data) => {
+    const handleRemoteAction = (data, correctLocalTank = false) => {
       if (!Array.isArray(data.tanks)) return;
       [p1, p2].forEach((tank, index) => {
         const remoteTank = data.tanks[index];
         if (index === playerIndex) {
           const correctionDistance = Math.hypot(remoteTank.x - tank.x, remoteTank.y - tank.y);
-          if (correctionDistance > 32) {
+          if (correctLocalTank || correctionDistance > 32) {
             tank.x = remoteTank.x;
             tank.y = remoteTank.y;
-          } else {
-            tank.x += (remoteTank.x - tank.x) * 0.1;
-            tank.y += (remoteTank.y - tank.y) * 0.1;
           }
           const correctionAngle = Math.atan2(
             Math.sin(remoteTank.angle - tank.angle),
             Math.cos(remoteTank.angle - tank.angle)
           );
-          tank.angle += correctionDistance > 32 ? correctionAngle : correctionAngle * 0.1;
+          if (correctLocalTank || correctionDistance > 32) tank.angle += correctionAngle;
         } else {
           tank.targetX = remoteTank.x;
           tank.targetY = remoteTank.y;
@@ -315,10 +316,39 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         }
         tank.health = remoteTank.health;
       });
-      bullets = Array.isArray(data.bullets) ? data.bullets.map(bullet => ({ ...bullet })) : [];
+      if (Array.isArray(data.bullets)) {
+        const previousBullets = new Map(bullets.map(bullet => [bullet.id, bullet]));
+        const nextBulletIds = new Set(data.bullets.map(bullet => bullet.id));
+        bullets.forEach(bullet => {
+          if (!nextBulletIds.has(bullet.id)) {
+            for (let i = 0; i < 5; i += 1) {
+              const angle = (Math.PI * 2 * i) / 5;
+              impactParticles.push({
+                x: bullet.x,
+                y: bullet.y,
+                vx: Math.cos(angle) * 55,
+                vy: Math.sin(angle) * 55,
+                life: 0.22
+              });
+            }
+          }
+        });
+        bullets = data.bullets.map(bullet => {
+          const previous = previousBullets.get(bullet.id);
+          return {
+            ...bullet,
+            previousX: previous?.x ?? bullet.x,
+            previousY: previous?.y ?? bullet.y
+          };
+        });
+      } else {
+        bullets = [];
+      }
       if (Array.isArray(data.scores)) setTankScores({ p1: data.scores[0], p2: data.scores[1] });
     };
+    const handleTankMoveRejected = (data) => handleRemoteAction(data, true);
     socket.on('game_state', handleRemoteAction);
+    socket.on('tank_move_rejected', handleTankMoveRejected);
 
     window.triggerTankShoot = () => {
       const me = playerIndex === 0 ? p1 : p2;
@@ -329,7 +359,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       if (socket && roomId) {
         socket.emit('game_action', { gameRoomId: roomId, action: { type: 'tank_shoot' } });
       }
-      me.cooldown = 16;
+      me.cooldown = 20;
     };
 
     const handleTouchControl = (pressed) => {
@@ -423,13 +453,16 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       }
 
       for (let b of barriers) {
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-        ctx.fillRect(b.x + 8, b.y + 8, b.w, b.h);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(b.x + 7, b.y + 7, b.w, b.h);
         ctx.fillStyle = '#334155';
         ctx.fillRect(b.x, b.y, b.w, b.h);
         ctx.strokeStyle = '#64748b';
         ctx.lineWidth = 4;
         ctx.strokeRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(b.x + 4, b.y + 4, b.w - 8, b.h - 8);
       }
 
       const opponent = playerIndex === 0 ? p2 : p1;
@@ -452,14 +485,35 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       p2.draw();
 
       for (const bullet of bullets) {
+        ctx.save();
+        ctx.strokeStyle = bullet.ownerIndex === 0 ? 'rgba(56, 189, 248, 0.72)' : 'rgba(248, 113, 113, 0.72)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(bullet.previousX, bullet.previousY);
+        ctx.lineTo(bullet.x, bullet.y);
+        ctx.stroke();
         ctx.shadowBlur = 12;
         ctx.shadowColor = bullet.ownerIndex === 0 ? '#38bdf8' : '#f87171';
         ctx.fillStyle = '#f8fafc';
         ctx.beginPath();
         ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
+        ctx.restore();
       }
+
+      impactParticles = impactParticles.filter(particle => {
+        particle.x += particle.vx * deltaTime;
+        particle.y += particle.vy * deltaTime;
+        particle.life -= deltaTime;
+        if (particle.life <= 0) return false;
+        ctx.globalAlpha = Math.min(1, particle.life / 0.22);
+        ctx.fillStyle = '#fbbf24';
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        return true;
+      });
 
       ctx.save();
       ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
@@ -477,6 +531,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
     return () => {
       socket.off('game_state', handleRemoteAction);
+      socket.off('tank_move_rejected', handleTankMoveRejected);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', releaseKeys);

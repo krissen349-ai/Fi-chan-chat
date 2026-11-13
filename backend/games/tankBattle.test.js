@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isValidTankMove } = require('./tankBattle');
+const {
+  isValidTankMove,
+  segmentDistanceToPoint,
+  segmentIntersectsWall,
+  TANK_WALLS
+} = require('./tankBattle');
 
 const tank = { x: 100, y: 250, angle: 0 };
 const opponentTank = { x: 700, y: 250 };
@@ -38,4 +43,16 @@ test('rejects positions inside walls, outside the arena, or through the opponent
       elapsedSeconds: 0.12
     }), false);
   }
+});
+
+test('keeps an unobstructed center firing lane between the starting tanks', () => {
+  const blocked = TANK_WALLS.some(wall =>
+    segmentIntersectsWall(130, 250, 670, 250, wall)
+  );
+  assert.equal(blocked, false);
+});
+
+test('detects bullets crossing obstacles or tanks between server ticks', () => {
+  assert.equal(segmentIntersectsWall(160, 140, 280, 140, TANK_WALLS[0]), true);
+  assert.ok(segmentDistanceToPoint(100, 250, 150, 250, 130, 263) < 18);
 });

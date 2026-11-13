@@ -22,7 +22,12 @@ const {
     setRedLightInput,
     startRematch
 } = require('./games/survivalGames');
-const { isValidTankMove, TANK_WALLS } = require('./games/tankBattle');
+const {
+    isValidTankMove,
+    segmentDistanceToPoint,
+    segmentIntersectsWall,
+    TANK_WALLS
+} = require('./games/tankBattle');
 
 const app = express();
 app.use(cors());
@@ -250,16 +255,19 @@ function advanceTankBattle(game, now) {
 
     state.bullets = state.bullets.filter(bullet => {
       if (respawned) return false;
-        bullet.x += bullet.vx * elapsed;
-        bullet.y += bullet.vy * elapsed;
+        const previousX = bullet.x;
+        const previousY = bullet.y;
+        const nextX = previousX + bullet.vx * elapsed;
+        const nextY = previousY + bullet.vy * elapsed;
+        bullet.x = nextX;
+        bullet.y = nextY;
         if (bullet.x < 0 || bullet.x > 800 || bullet.y < 0 || bullet.y > 500) {
             changed = true;
             return false;
         }
 
         const hitWall = TANK_WALLS.some(wall =>
-            bullet.x > wall.x && bullet.x < wall.x + wall.w &&
-            bullet.y > wall.y && bullet.y < wall.y + wall.h
+            segmentIntersectsWall(previousX, previousY, nextX, nextY, wall)
         );
         if (hitWall) {
             changed = true;
@@ -268,7 +276,7 @@ function advanceTankBattle(game, now) {
 
         const targetIndex = 1 - bullet.ownerIndex;
         const target = state.tanks[targetIndex];
-        if (Math.hypot(bullet.x - target.x, bullet.y - target.y) < 18) {
+        if (segmentDistanceToPoint(previousX, previousY, nextX, nextY, target.x, target.y) < 18) {
             target.health -= 25;
             changed = true;
             if (target.health <= 0) {
@@ -629,7 +637,7 @@ io.on('connection', (socket) => {
                 const nextAngle = Number(action.angle);
                 const tank = state.tanks[playerIndex];
                 const opponentTank = state.tanks[1 - playerIndex];
-                const elapsedSeconds = Math.min(0.12, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
+                const elapsedSeconds = Math.min(0.35, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
                 if (!isValidTankMove({
                     tank,
                     opponentTank,
@@ -637,7 +645,11 @@ io.on('connection', (socket) => {
                     y: nextY,
                     angle: nextAngle,
                     elapsedSeconds
-                })) return;
+                })) {
+                    state.lastMoveAt[playerIndex] = now;
+                    socket.emit('tank_move_rejected', { gameRoomId, ...getGamePublicState(game) });
+                    return;
+                }
                 tank.x = nextX;
                 tank.y = nextY;
                 tank.angle = nextAngle;
