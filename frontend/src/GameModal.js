@@ -202,7 +202,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           !pointerState.pointerDown &&
           !pointerState.holdActive &&
           !controls.left &&
-          !controls.right
+          !controls.right &&
+          !controls.forward &&
+          !controls.backward
         ) {
           this.angle += rotateStep;
         }
@@ -439,7 +441,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         move: pointerState.holdActive ? 1 : controls.forward ? 1 : controls.backward ? -1 : 0,
         turn: now < rotationPausedUntil ? 0 : controls.left ? -1 : controls.right ? 1 : 0,
         autoRotate: now >= rotationPausedUntil &&
-          !pointerState.pointerDown && !controls.left && !controls.right
+          !pointerState.pointerDown &&
+          !controls.forward &&
+          !controls.backward &&
+          !controls.left &&
+          !controls.right
       };
       const inputSignature = `${input.move}:${input.turn}:${input.autoRotate}`;
       if (socket && roomId && (

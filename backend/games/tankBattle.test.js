@@ -17,6 +17,15 @@ test('advances tanks from input on the server at the 20 Hz tick rate', () => {
   assert.equal(tank.y, 250);
 });
 
+test('moving forward with auto-rotation disabled keeps the tank on a straight heading', () => {
+  const tank = { x: 100, y: 250, angle: Math.PI / 2 };
+  const opponent = { x: 700, y: 250, angle: Math.PI };
+  advanceTank(tank, opponent, { move: 1, turn: 0, autoRotate: false }, 0.05);
+  assert.ok(Math.abs(tank.x - 100) < 1e-9);
+  assert.ok(Math.abs(tank.y - 259.6) < 1e-9);
+  assert.equal(tank.angle, Math.PI / 2);
+});
+
 test('server auto-rotation and manual steering use the same controls as the client', () => {
   const tank = { x: 100, y: 250, angle: 0 };
   const opponent = { x: 700, y: 250, angle: Math.PI };
