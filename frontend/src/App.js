@@ -104,6 +104,9 @@ const getUploadErrorMessage = (error) => {
   if (error?.code === 'permission-denied') {
     return 'Firestore is blocking file uploads. Deploy the updated firestore.rules file, then try again.';
   }
+  if (error?.code === 'not-found') {
+    return 'Firestore could not find this database or document. Confirm Cloud Firestore is enabled for the app project and reload the site.';
+  }
   if (error?.code === 'unavailable') {
     return 'Firestore is temporarily offline. Check your connection and try again.';
   }
@@ -562,8 +565,15 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       try {
         if (user) {
-          const savedBio = localStorage.getItem(`chat_bio_${user.uid}`) || "Hey there! I am using Fi-chan Chat.";
-          const savedPfp = localStorage.getItem(`chat_pfp_${user.uid}`);
+          const profileSnapshot = await getDoc(doc(db, 'users', user.uid)).catch(error => {
+            console.warn('Could not load saved profile from Firestore:', error);
+            return null;
+          });
+          const savedProfile = profileSnapshot?.exists() ? profileSnapshot.data() : {};
+          const savedBio = savedProfile.bio
+            || localStorage.getItem(`chat_bio_${user.uid}`)
+            || "Hey there! I am using Fi-chan Chat.";
+          const savedPfp = savedProfile.pfp || localStorage.getItem(`chat_pfp_${user.uid}`);
 
           const finalUser = {
             id: socket.id,
@@ -1426,10 +1436,9 @@ function App() {
         ? await uploadFile(editPfpFile, 'profile')
         : await ensureHostedImage(editPfp || currentUser.pfp);
 
-      await updateProfile(user, {
-        displayName: editUsername.trim(),
-        photoURL: finalPfp
-      });
+      const authProfile = { displayName: editUsername.trim() };
+      if (!finalPfp.startsWith(FIRESTORE_UPLOAD_PREFIX)) authProfile.photoURL = finalPfp;
+      await updateProfile(user, authProfile);
       await setDoc(doc(db, "users", user.uid), {
         uid: user.uid,
         username: editUsername.trim(),
@@ -1507,10 +1516,9 @@ function App() {
           ? await uploadFile(customPfpFile, 'profile')
           : await ensureHostedImage(customPfp || fallbackAvatar);
 
-        await updateProfile(user, { 
-          displayName: username.trim(), 
-          photoURL: photoToSave
-        });
+        const authProfile = { displayName: username.trim() };
+        if (!photoToSave.startsWith(FIRESTORE_UPLOAD_PREFIX)) authProfile.photoURL = photoToSave;
+        await updateProfile(user, authProfile);
 
         const userBio = editBio.trim() || "Hey there! I am using Fi-chan Chat.";
         
