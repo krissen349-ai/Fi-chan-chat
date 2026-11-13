@@ -40,20 +40,42 @@ function segmentDistanceToPoint(x1, y1, x2, y2, pointX, pointY) {
   return Math.hypot(pointX - (x1 + projection * dx), pointY - (y1 + projection * dy));
 }
 
-function isValidTankMove({ tank, opponentTank, x, y, angle, elapsedSeconds }) {
-  if (![x, y, angle, elapsedSeconds].every(Number.isFinite) || elapsedSeconds < 0) return false;
-  if (tankPositionBlocked(x, y) || Math.hypot(x - opponentTank.x, y - opponentTank.y) < TANK_RADIUS * 2) return false;
+function createTankInput() {
+  return { move: 0, turn: 0, autoRotate: true };
+}
 
-  const allowedDistance = TANK_MAX_SPEED * elapsedSeconds + 5;
-  const angleDelta = Math.atan2(Math.sin(angle - tank.angle), Math.cos(angle - tank.angle));
-  const allowedAngleDelta = TANK_MAX_ROTATION_SPEED * elapsedSeconds + 0.08;
+function advanceTank(tank, opponentTank, input, elapsedSeconds) {
+  const dt = Math.min(0.1, Math.max(0, elapsedSeconds));
+  const move = Math.max(-1, Math.min(1, Number(input.move) || 0));
+  const turn = Math.max(-1, Math.min(1, Number(input.turn) || 0));
+  const rotation = turn
+    ? turn * 1.5
+    : input.autoRotate ? 1 : 0;
 
-  return Math.hypot(x - tank.x, y - tank.y) <= allowedDistance &&
-    Math.abs(angleDelta) <= allowedAngleDelta;
+  tank.angle += rotation * TANK_MAX_ROTATION_SPEED * dt;
+  if (!move) return rotation !== 0;
+
+  const distance = move * TANK_MAX_SPEED * dt;
+  const nextX = tank.x + Math.cos(tank.angle) * distance;
+  const nextY = tank.y + Math.sin(tank.angle) * distance;
+  const blockedByOpponent = (x, y) =>
+    Math.hypot(x - opponentTank.x, y - opponentTank.y) < TANK_RADIUS * 2;
+
+  let moved = false;
+  if (!tankPositionBlocked(nextX, tank.y) && !blockedByOpponent(nextX, tank.y)) {
+    tank.x = nextX;
+    moved = true;
+  }
+  if (!tankPositionBlocked(tank.x, nextY) && !blockedByOpponent(tank.x, nextY)) {
+    tank.y = nextY;
+    moved = true;
+  }
+  return rotation !== 0 || moved;
 }
 
 module.exports = {
-  isValidTankMove,
+  advanceTank,
+  createTankInput,
   segmentDistanceToPoint,
   segmentIntersectsWall,
   tankPositionBlocked,

@@ -23,7 +23,8 @@ const {
     startRematch
 } = require('./games/survivalGames');
 const {
-    isValidTankMove,
+    advanceTank,
+    createTankInput,
     segmentDistanceToPoint,
     segmentIntersectsWall,
     TANK_WALLS
@@ -210,8 +211,9 @@ function createGameState(gameId) {
                 { x: 100, y: 250, angle: 0, health: 100 },
                 { x: 700, y: 250, angle: Math.PI, health: 100 }
             ],
+            inputs: [createTankInput(), createTankInput()],
+            lastInputAt: [Date.now(), Date.now()],
             bullets: [],
-            lastMoveAt: [Date.now(), Date.now()],
             lastFireAt: [0, 0],
             nextBulletId: 1,
             lastTickAt: Date.now(),
@@ -252,6 +254,19 @@ function advanceTankBattle(game, now) {
     state.lastTickAt = now;
     let changed = false;
     let respawned = false;
+
+    state.inputs.forEach((input, index) => {
+        if (now - state.lastInputAt[index] > 300) {
+            state.inputs[index] = createTankInput();
+            state.lastInputAt[index] = now;
+        }
+        changed = advanceTank(
+            state.tanks[index],
+            state.tanks[1 - index],
+            state.inputs[index],
+            elapsed
+        ) || changed;
+    });
 
     state.bullets = state.bullets.filter(bullet => {
       if (respawned) return false;
@@ -627,33 +642,17 @@ io.on('connection', (socket) => {
             return;
         }
 
-        if (game.gameId === 'tank-battle' && (action.type === 'tank_move' || action.type === 'tank_shoot')) {
+        if (game.gameId === 'tank-battle' && ['tank_input', 'tank_shoot'].includes(action.type)) {
             const state = game.state;
             const now = Date.now();
-            if (action.type === 'tank_move') {
-                if (now - state.lastMoveAt[playerIndex] < 40) return;
-                const nextX = Number(action.x);
-                const nextY = Number(action.y);
-                const nextAngle = Number(action.angle);
-                const tank = state.tanks[playerIndex];
-                const opponentTank = state.tanks[1 - playerIndex];
-                const elapsedSeconds = Math.min(1, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
-                if (!isValidTankMove({
-                    tank,
-                    opponentTank,
-                    x: nextX,
-                    y: nextY,
-                    angle: nextAngle,
-                    elapsedSeconds
-                })) {
-                    state.lastMoveAt[playerIndex] = now;
-                    socket.emit('tank_move_rejected', { gameRoomId, ...getGamePublicState(game) });
-                    return;
-                }
-                tank.x = nextX;
-                tank.y = nextY;
-                tank.angle = nextAngle;
-                state.lastMoveAt[playerIndex] = now;
+            if (action.type === 'tank_input') {
+                const move = Number(action.input?.move);
+                const turn = Number(action.input?.turn);
+                const autoRotate = action.input?.autoRotate;
+                if (![-1, 0, 1].includes(move) || ![-1, 0, 1].includes(turn) || typeof autoRotate !== 'boolean') return;
+                state.inputs[playerIndex] = { move, turn, autoRotate };
+                state.lastInputAt[playerIndex] = now;
+                return;
             } else {
                 if (now - state.lastFireAt[playerIndex] < 300) return;
                 const tank = state.tanks[playerIndex];

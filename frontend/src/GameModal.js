@@ -192,62 +192,61 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       update(controls, deltaTime = 1 / 60) {
         if (!this.isMe) return;
 
-        let moved = false;
-        const now = performance.now();
         const frameScale = deltaTime * 60;
         const moveStep = this.speed * frameScale;
         const rotateStep = this.rotSpeed * frameScale;
 
-        if (!pointerState.pointerDown && !pointerState.holdActive) {
+        if (!pointerState.pointerDown && !pointerState.holdActive && !controls.left && !controls.right) {
           this.angle += rotateStep;
-          moved = true;
         }
 
         if (pointerState.holdActive) {
           const nextX = this.x + Math.cos(this.angle) * moveStep;
           const nextY = this.y + Math.sin(this.angle) * moveStep;
-          if (!this.checkWallCollision(nextX, nextY)) {
+          let moved = false;
+          if (!this.checkWallCollision(nextX, this.y)) {
             trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
             this.x = nextX;
-            this.y = nextY;
             moved = true;
+          }
+          if (!this.checkWallCollision(this.x, nextY)) {
+            if (!moved) trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
+            this.y = nextY;
           }
         }
 
         if (controls.left || controls.right) {
           this.angle += controls.left ? -rotateStep * 1.5 : rotateStep * 1.5;
-          moved = true;
         }
 
         const direction = controls.forward ? 1 : controls.backward ? -1 : 0;
         if (direction) {
           const nextX = this.x + Math.cos(this.angle) * moveStep * direction;
           const nextY = this.y + Math.sin(this.angle) * moveStep * direction;
-          if (!this.checkWallCollision(nextX, nextY)) {
+          let moved = false;
+          if (!this.checkWallCollision(nextX, this.y)) {
             trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
             this.x = nextX;
-            this.y = nextY;
             moved = true;
+          }
+          if (!this.checkWallCollision(this.x, nextY)) {
+            if (!moved) trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
+            this.y = nextY;
           }
         }
 
-        this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
-        this.y = Math.max(this.size, Math.min(canvas.height - this.size, this.y));
+        const radius = this.size / 2;
+        this.x = Math.max(radius, Math.min(canvas.width - radius, this.x));
+        this.y = Math.max(radius, Math.min(canvas.height - radius, this.y));
 
-        if (moved && socket && roomId && now - lastNetworkUpdateRef.current > 50) {
-          lastNetworkUpdateRef.current = now;
-          socket.emit('game_action', {
-            gameRoomId: roomId,
-            action: { type: 'tank_move', x: this.x, y: this.y, angle: this.angle, playerIndex }
-          });
-        }
       }
 
       checkWallCollision(nx, ny) {
-        if (nx < this.size || nx > canvas.width - this.size || ny < this.size || ny > canvas.height - this.size) return true;
+        const radius = this.size / 2;
+        if (nx < radius || nx > canvas.width - radius || ny < radius || ny > canvas.height - radius) return true;
         for (let b of barriers) {
-          if (nx + this.size/2 > b.x && nx - this.size/2 < b.x + b.w &&
-              ny + this.size/2 > b.y && ny - this.size/2 < b.y + b.h) return true;
+          if (nx + radius > b.x && nx - radius < b.x + b.w &&
+              ny + radius > b.y && ny - radius < b.y + b.h) return true;
         }
         const otherTank = this === p1 ? p2 : p1;
         if (otherTank && Math.hypot(nx - otherTank.x, ny - otherTank.y) < this.size) return true;
@@ -295,21 +294,24 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     const p1 = new Tank(100, 250, '#0284c7', '#38bdf8', 0, playerIndex === 0);
     const p2 = new Tank(700, 250, '#dc2626', '#f87171', Math.PI, playerIndex === 1);
 
-    const handleRemoteAction = (data, correctLocalTank = false) => {
+    const handleRemoteAction = (data) => {
       if (!Array.isArray(data.tanks)) return;
       [p1, p2].forEach((tank, index) => {
         const remoteTank = data.tanks[index];
         if (index === playerIndex) {
           const correctionDistance = Math.hypot(remoteTank.x - tank.x, remoteTank.y - tank.y);
-          if (correctLocalTank || correctionDistance > 32) {
+          if (correctionDistance > 48) {
             tank.x = remoteTank.x;
             tank.y = remoteTank.y;
+          } else {
+            tank.x += (remoteTank.x - tank.x) * 0.12;
+            tank.y += (remoteTank.y - tank.y) * 0.12;
           }
           const correctionAngle = Math.atan2(
             Math.sin(remoteTank.angle - tank.angle),
             Math.cos(remoteTank.angle - tank.angle)
           );
-          if (correctLocalTank || correctionDistance > 32) tank.angle += correctionAngle;
+          tank.angle += correctionDistance > 48 ? correctionAngle : correctionAngle * 0.12;
         } else {
           tank.targetX = remoteTank.x;
           tank.targetY = remoteTank.y;
@@ -353,9 +355,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ));
       }
     };
-    const handleTankMoveRejected = (data) => handleRemoteAction(data, true);
     socket.on('game_state', handleRemoteAction);
-    socket.on('tank_move_rejected', handleTankMoveRejected);
 
     window.triggerTankShoot = () => {
       const me = playerIndex === 0 ? p1 : p2;
@@ -422,6 +422,24 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         if (performance.now() - pointerState.startedAt >= HOLD_THRESHOLD_MS) {
           pointerState.holdActive = true;
         }
+      }
+
+      const input = {
+        move: pointerState.holdActive ? 1 : controls.forward ? 1 : controls.backward ? -1 : 0,
+        turn: controls.left ? -1 : controls.right ? 1 : 0,
+        autoRotate: !pointerState.pointerDown && !controls.left && !controls.right
+      };
+      const inputSignature = `${input.move}:${input.turn}:${input.autoRotate}`;
+      if (socket && roomId && (
+        inputSignature !== lastNetworkUpdateRef.signature ||
+        now - lastNetworkUpdateRef.current >= 50
+      )) {
+        lastNetworkUpdateRef.current = now;
+        lastNetworkUpdateRef.signature = inputSignature;
+        socket.emit('game_action', {
+          gameRoomId: roomId,
+          action: { type: 'tank_input', input }
+        });
       }
 
       ctx.fillStyle = '#0f172a';
@@ -538,7 +556,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
     return () => {
       socket.off('game_state', handleRemoteAction);
-      socket.off('tank_move_rejected', handleTankMoveRejected);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', releaseKeys);

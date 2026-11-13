@@ -1,59 +1,38 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  isValidTankMove,
+  advanceTank,
+  createTankInput,
   segmentDistanceToPoint,
   segmentIntersectsWall,
   TANK_WALLS
 } = require('./tankBattle');
 
-const tank = { x: 100, y: 250, angle: 0 };
-const opponentTank = { x: 700, y: 250 };
-
-test('accepts normal movement and rotation at the 20 Hz sync rate', () => {
-  assert.equal(isValidTankMove({
-    tank,
-    opponentTank,
-    x: 109.6,
-    y: 250,
-    angle: 0.165,
-    elapsedSeconds: 0.05
-  }), true);
+test('advances tanks from input on the server at the 20 Hz tick rate', () => {
+  const tank = { x: 100, y: 250, angle: 0 };
+  const opponent = { x: 700, y: 250, angle: Math.PI };
+  assert.equal(advanceTank(tank, opponent, { move: 1, turn: 0, autoRotate: false }, 0.05), true);
+  assert.ok(Math.abs(tank.x - 109.6) < 1e-9);
+  assert.equal(tank.y, 250);
 });
 
-test('allows realistic movement after delayed network updates', () => {
-  assert.equal(isValidTankMove({
-    tank,
-    opponentTank,
-    x: 190,
-    y: 250,
-    angle: 0.9,
-    elapsedSeconds: 0.5
-  }), true);
+test('server auto-rotation and manual steering use the same controls as the client', () => {
+  const tank = { x: 100, y: 250, angle: 0 };
+  const opponent = { x: 700, y: 250, angle: Math.PI };
+  advanceTank(tank, opponent, createTankInput(), 0.05);
+  assert.ok(Math.abs(tank.angle - 0.165) < 1e-9);
+  advanceTank(tank, opponent, { move: 0, turn: -1, autoRotate: false }, 0.05);
+  assert.ok(Math.abs(tank.angle - (0.165 - 0.2475)) < 1e-9);
 });
 
-test('rejects movement that exceeds the elapsed-time speed allowance', () => {
-  assert.equal(isValidTankMove({
-    tank,
-    opponentTank,
-    x: 140,
-    y: 250,
-    angle: 0,
-    elapsedSeconds: 0.05
-  }), false);
-});
+test('server movement stops at arena walls and other tanks', () => {
+  const wallTank = { x: 168, y: 140, angle: 0 };
+  advanceTank(wallTank, { x: 700, y: 250 }, { move: 1, turn: 0, autoRotate: false }, 0.1);
+  assert.equal(wallTank.x, 168);
 
-test('rejects positions inside walls, outside the arena, or through the opponent', () => {
-  for (const [x, y] of [[200, 150], [10, 250], [700, 250]]) {
-    assert.equal(isValidTankMove({
-      tank,
-      opponentTank,
-      x,
-      y,
-      angle: 0,
-      elapsedSeconds: 0.12
-    }), false);
-  }
+  const blockedTank = { x: 650, y: 250, angle: 0 };
+  advanceTank(blockedTank, { x: 670, y: 250 }, { move: 1, turn: 0, autoRotate: false }, 0.1);
+  assert.equal(blockedTank.x, 650);
 });
 
 test('keeps an unobstructed center firing lane between the starting tanks', () => {
