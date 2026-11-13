@@ -22,6 +22,7 @@ const {
     setRedLightInput,
     startRematch
 } = require('./games/survivalGames');
+const { isValidTankMove, TANK_WALLS } = require('./games/tankBattle');
 
 const app = express();
 app.use(cors());
@@ -159,12 +160,6 @@ const SUPPORTED_GAME_IDS = new Set([
     RED_LIGHT_GREEN_LIGHT,
     GLASS_BRIDGE
 ]);
-const TANK_WALLS = [
-    { x: 180, y: 120, w: 60, h: 220 },
-    { x: 560, y: 160, w: 60, h: 220 },
-    { x: 330, y: 210, w: 140, h: 80 }
-];
-
 // Tic-Tac-Toe Winner Checker Helper
 function checkWinner(board) {
     const lines = [
@@ -211,7 +206,7 @@ function createGameState(gameId) {
                 { x: 700, y: 250, angle: Math.PI, health: 100 }
             ],
             bullets: [],
-            lastMoveAt: [0, 0],
+            lastMoveAt: [Date.now(), Date.now()],
             lastFireAt: [0, 0],
             nextBulletId: 1,
             lastTickAt: Date.now(),
@@ -244,15 +239,6 @@ function checkConnectFourWinner(board) {
         }
     }
     return board.every(Boolean) ? 'DRAW' : null;
-}
-
-function tankPositionBlocked(x, y) {
-    const halfSize = 16;
-    if (x < halfSize || x > 800 - halfSize || y < halfSize || y > 500 - halfSize) return true;
-    return TANK_WALLS.some(wall =>
-        x + halfSize > wall.x && x - halfSize < wall.x + wall.w &&
-        y + halfSize > wall.y && y - halfSize < wall.y + wall.h
-    );
 }
 
 function advanceTankBattle(game, now) {
@@ -643,13 +629,15 @@ io.on('connection', (socket) => {
                 const nextAngle = Number(action.angle);
                 const tank = state.tanks[playerIndex];
                 const opponentTank = state.tanks[1 - playerIndex];
-                const angleDelta = Math.atan2(Math.sin(nextAngle - tank.angle), Math.cos(nextAngle - tank.angle));
-                if (!Number.isFinite(nextX) || !Number.isFinite(nextY) || !Number.isFinite(nextAngle) ||
-                    Math.hypot(nextX - tank.x, nextY - tank.y) > 10 || Math.abs(angleDelta) > 0.2 ||
-                    tankPositionBlocked(nextX, nextY) || Math.hypot(nextX - opponentTank.x, nextY - opponentTank.y) < 32) {
-                    socket.emit('game_action_error', { gameRoomId, message: 'Tank movement was outside the arena or too fast.' });
-                    return;
-                }
+                const elapsedSeconds = Math.min(0.12, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
+                if (!isValidTankMove({
+                    tank,
+                    opponentTank,
+                    x: nextX,
+                    y: nextY,
+                    angle: nextAngle,
+                    elapsedSeconds
+                })) return;
                 tank.x = nextX;
                 tank.y = nextY;
                 tank.angle = nextAngle;

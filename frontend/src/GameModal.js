@@ -172,6 +172,9 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.accentColor = accentColor;
         this.size = 32;
         this.angle = angle;
+        this.targetX = x;
+        this.targetY = y;
+        this.targetAngle = angle;
         this.speed = MOVE_SPEED;
         this.rotSpeed = AUTO_ROTATION_SPEED;
         this.cooldown = 0;
@@ -291,9 +294,25 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       if (!Array.isArray(data.tanks)) return;
       [p1, p2].forEach((tank, index) => {
         const remoteTank = data.tanks[index];
-        tank.x = remoteTank.x;
-        tank.y = remoteTank.y;
-        tank.angle = remoteTank.angle;
+        if (index === playerIndex) {
+          const correctionDistance = Math.hypot(remoteTank.x - tank.x, remoteTank.y - tank.y);
+          if (correctionDistance > 32) {
+            tank.x = remoteTank.x;
+            tank.y = remoteTank.y;
+          } else {
+            tank.x += (remoteTank.x - tank.x) * 0.1;
+            tank.y += (remoteTank.y - tank.y) * 0.1;
+          }
+          const correctionAngle = Math.atan2(
+            Math.sin(remoteTank.angle - tank.angle),
+            Math.cos(remoteTank.angle - tank.angle)
+          );
+          tank.angle += correctionDistance > 32 ? correctionAngle : correctionAngle * 0.1;
+        } else {
+          tank.targetX = remoteTank.x;
+          tank.targetY = remoteTank.y;
+          tank.targetAngle = remoteTank.angle;
+        }
         tank.health = remoteTank.health;
       });
       bullets = Array.isArray(data.bullets) ? data.bullets.map(bullet => ({ ...bullet })) : [];
@@ -412,6 +431,16 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ctx.lineWidth = 4;
         ctx.strokeRect(b.x, b.y, b.w, b.h);
       }
+
+      const opponent = playerIndex === 0 ? p2 : p1;
+      const interpolation = 1 - Math.exp(-14 * deltaTime);
+      opponent.x += (opponent.targetX - opponent.x) * interpolation;
+      opponent.y += (opponent.targetY - opponent.y) * interpolation;
+      const opponentAngleDelta = Math.atan2(
+        Math.sin(opponent.targetAngle - opponent.angle),
+        Math.cos(opponent.targetAngle - opponent.angle)
+      );
+      opponent.angle += opponentAngleDelta * interpolation;
 
       p1.update(playerIndex === 0 ? controls : {}, deltaTime);
       p2.update(playerIndex === 1 ? controls : {}, deltaTime);
@@ -638,18 +667,21 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           aria-label="Move and fire tank"
           onPointerDown={(event) => {
             event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
             if (window.handleTankTouchControl) window.handleTankTouchControl(true);
           }}
           onPointerUp={(event) => {
             event.preventDefault();
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
             if (window.handleTankTouchControl) window.handleTankTouchControl(false);
           }}
           onPointerLeave={(event) => {
             event.preventDefault();
-            if (window.handleTankTouchControl) window.handleTankTouchControl(false);
+            if (event.buttons === 0 && window.handleTankTouchControl) window.handleTankTouchControl(false);
           }}
           onPointerCancel={(event) => {
             event.preventDefault();
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
             if (window.handleTankTouchControl) window.handleTankTouchControl(false);
           }}
         >
