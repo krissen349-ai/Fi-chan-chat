@@ -9,7 +9,7 @@ import { deleteToken, getToken, onMessage } from "firebase/messaging";
 import { set, get, del } from 'idb-keyval';
 
 import { messagingPromise } from "./firebase";
-import { auth, db, storage } from './firebase';
+import { auth, db, firebaseConfig } from './firebase';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -29,7 +29,6 @@ import {
   doc,     
   setDoc
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 
 const LineIcon = ({ name, size = 19 }) => {
   const paths = {
@@ -86,17 +85,28 @@ const socket = io(getSocketBaseUrl(), {
   autoConnect: true
 });
 
-const uploadFileToStorage = async (file, folder) => {
+const uploadFile = async (file, kind) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in before uploading files.');
 
-  const safeName = (file.name || 'upload').replace(/[^\w.-]/g, '_').slice(-100);
-  const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}_${safeName}`;
-  const fileRef = ref(storage, `users/${user.uid}/${folder}/${uniqueName}`);
-  const snapshot = await uploadBytes(fileRef, file, {
-    contentType: file.type || 'application/octet-stream'
+  const idToken = await user.getIdToken();
+  const response = await fetch(`${getBackendBaseUrl()}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      'Content-Type': 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name || 'upload'),
+      'X-File-Type': file.type || 'application/octet-stream',
+      'X-Upload-Kind': kind,
+      'X-Firebase-Api-Key': firebaseConfig.apiKey
+    },
+    body: file
   });
-  return getDownloadURL(snapshot.ref);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.fileId) {
+    throw new Error(result.error || `Upload failed (HTTP ${response.status}).`);
+  }
+  return `${getBackendBaseUrl()}/api/uploads/${result.fileId}`;
 };
 
 const ensureHostedImage = async (image) => {
@@ -104,7 +114,7 @@ const ensureHostedImage = async (image) => {
   const response = await fetch(image);
   const blob = await response.blob();
   const extension = blob.type.split('/')[1] || 'jpg';
-  return uploadFileToStorage(
+  return uploadFile(
     new File([blob], `profile.${extension}`, { type: blob.type || 'image/jpeg' }),
     'profile'
   );
@@ -1111,7 +1121,7 @@ function App() {
     const isGlobal = chat.id === 'global-group' || chat.id === 'global' || chat.name === 'Global Group';
     for (const file of files) {
       try {
-        const uploadedUrl = await uploadFileToStorage(file, 'chat-files');
+        const uploadedUrl = await uploadFile(file, 'chat');
         const fileType = file.type.startsWith('image/') ? 'image'
           : file.type.startsWith('video/') ? 'video'
             : file.type.startsWith('audio/') ? 'audio' : 'file';
@@ -1167,6 +1177,10 @@ function App() {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       alert('Please choose an image file.');
+      return;
+    }
+    if (!/^image\/(jpeg|png|gif|webp|avif|bmp)$/i.test(file.type)) {
+      alert('Profile photos must be JPEG, PNG, GIF, WebP, AVIF, or BMP images.');
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
@@ -1255,30 +1269,30 @@ function App() {
   const saveProfileEdit = async () => {
     if (!editUsername.trim()) return alert("Username khali nahi chodh sakte!");
     try {
-      const finalPfp = editPfpFile
-        ? await uploadFileToStorage(editPfpFile, 'profile')
-        : await ensureHostedImage(editPfp || currentUser.pfp);
-      
-      if (auth.currentUser) {
-        await updateProfile(auth.currentUser, {
-          displayName: editUsername.trim(),
-          photoURL: finalPfp
-        });
-        
-        try {
-          localStorage.setItem(`chat_bio_${auth.currentUser.uid}`, editBio.trim());
-          localStorage.setItem(`chat_pfp_${auth.currentUser.uid}`, finalPfp);
-        } catch (storageErr) {
-          console.warn("LocalStorage Quota Exceeded during edit! Handled safely.", storageErr);
-        }
+      const user = auth.currentUser;
+      if (!user) throw new Error('Please sign in again before saving your profile.');
 
-        await setDoc(doc(db, "users", auth.currentUser.uid), {
-          uid: auth.currentUser.uid,
-          username: editUsername.trim(),
-          bio: editBio.trim(),
-          pfp: finalPfp,
-          lastSeen: Date.now()
-        }, { merge: true });
+      const finalPfp = editPfpFile
+        ? await uploadFile(editPfpFile, 'profile')
+        : await ensureHostedImage(editPfp || currentUser.pfp);
+
+      await updateProfile(user, {
+        displayName: editUsername.trim(),
+        photoURL: finalPfp
+      });
+      await setDoc(doc(db, "users", user.uid), {
+        uid: user.uid,
+        username: editUsername.trim(),
+        bio: editBio.trim(),
+        pfp: finalPfp,
+        lastSeen: Date.now()
+      }, { merge: true });
+
+      try {
+        localStorage.setItem(`chat_bio_${user.uid}`, editBio.trim());
+        localStorage.setItem(`chat_pfp_${user.uid}`, finalPfp);
+      } catch (storageErr) {
+        console.warn("LocalStorage Quota Exceeded during edit! Handled safely.", storageErr);
       }
       
       const updatedUser = { 
@@ -1290,6 +1304,7 @@ function App() {
       
       setCurrentUser(updatedUser);
       socket.emit('update_profile', updatedUser);
+      setEditPfp(finalPfp);
       setEditPfpFile(null);
       setIsEditingProfile(false);
       alert("Profile updated permanently! ✨");
@@ -1339,7 +1354,7 @@ function App() {
         const user = userCredential.user;
         const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
         const photoToSave = customPfpFile
-          ? await uploadFileToStorage(customPfpFile, 'profile')
+          ? await uploadFile(customPfpFile, 'profile')
           : await ensureHostedImage(customPfp || fallbackAvatar);
 
         await updateProfile(user, { 

@@ -1,13 +1,9 @@
 # File and Profile Photo Uploads
 
-Chat attachments and profile photos are uploaded to the Firebase Storage bucket configured in `frontend/src/firebase.js`. Chat attachments are limited to 15 MiB and profile photos to 10 MiB. Uploads are stored under the authenticated user's ID; chat messages continue to use the existing private-chat Firestore and group-chat Socket.IO flows.
+Chat attachments (up to 15 MB) and profile photos (up to 10 MB) are uploaded to the existing backend and stored in MongoDB GridFS. Upload requests are authenticated with the user's Firebase ID token. The uploaded file URL is then saved in the existing private-chat Firestore or group-chat Socket.IO message flow; profile photo URLs continue to be saved to Firebase Auth and Firestore.
 
-## Firebase setup
+## Backend setup
 
-Enable Firebase Storage for the configured Firebase project, then deploy the rules from the repository root:
+The backend must have a reachable MongoDB database configured with `MONGO_URI`. If Firebase Admin is not configured using `FIREBASE_SERVICE_ACCOUNT_JSON`, the backend validates upload tokens through Firebase Identity Toolkit using the public Firebase API key sent by the frontend.
 
-```sh
-firebase deploy --only storage
-```
-
-The rules in `storage.rules` restrict uploads to the authenticated user's own folder, apply the file-size limits, and require profile photos to have an image content type. Signed-in users can read uploaded files so existing chat participants can open shared attachments.
+Files are served from the backend using a random, unguessable file ID so existing chat and profile image views can load them without changing their rendering flow.

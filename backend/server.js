@@ -35,6 +35,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 const server = http.createServer(app);
+const MAX_CHAT_UPLOAD_BYTES = 15 * 1024 * 1024;
+const MAX_PROFILE_UPLOAD_BYTES = 10 * 1024 * 1024;
+const UPLOAD_BUCKET_NAME = 'chatUploads';
 
 const AI_SYSTEM_PROMPT = `You are Fi-chan AI, a warm and witty chat companion inside a social chat app.
 Reply in natural Hinglish: mostly simple Hindi written in Roman script with comfortable English words.
@@ -104,6 +107,158 @@ const giftSchema = new mongoose.Schema({
 const Gift = mongoose.model('Gift', giftSchema);
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
+
+async function verifyUploadUser(idToken, apiKey) {
+    if (!idToken) throw Object.assign(new Error('Sign in before uploading.'), { status: 401 });
+
+    if (firebaseAdminReady) {
+        try {
+            return (await admin.auth().verifyIdToken(idToken)).uid;
+        } catch {
+            throw Object.assign(new Error('Your sign-in expired. Sign in again and retry.'), { status: 401 });
+        }
+    }
+
+    if (!apiKey) {
+        throw Object.assign(new Error('Upload authentication is not configured on the server.'), { status: 503 });
+    }
+
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+    });
+    const result = await response.json().catch(() => ({}));
+    const uid = response.ok ? result.users?.[0]?.localId : null;
+    if (!uid) {
+        throw Object.assign(new Error('Your sign-in expired. Sign in again and retry.'), { status: 401 });
+    }
+    return uid;
+}
+
+app.post('/api/uploads', (req, res, next) => {
+    express.raw({ type: 'application/octet-stream', limit: `${MAX_CHAT_UPLOAD_BYTES}b` })(req, res, (error) => {
+        if (error) {
+            if (error.type === 'entity.too.large') {
+                return res.status(413).json({ error: 'Chat files must be 15 MB or smaller.' });
+            }
+            return next(error);
+        }
+        next();
+    });
+}, async (req, res) => {
+    try {
+        const authorization = req.get('authorization') || '';
+        const idToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+        const uid = await verifyUploadUser(idToken, req.get('x-firebase-api-key') || process.env.FIREBASE_WEB_API_KEY);
+        const kind = req.get('x-upload-kind');
+        const contentType = (req.get('x-file-type') || 'application/octet-stream').toLowerCase();
+        const maxBytes = kind === 'profile' ? MAX_PROFILE_UPLOAD_BYTES : kind === 'chat' ? MAX_CHAT_UPLOAD_BYTES : 0;
+        if (!maxBytes) return res.status(400).json({ error: 'Invalid upload type.' });
+        if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+            return res.status(400).json({ error: 'Choose a non-empty file to upload.' });
+        }
+        if (req.body.length > maxBytes) {
+            return res.status(413).json({ error: kind === 'profile' ? 'Profile photos must be 10 MB or smaller.' : 'Chat files must be 15 MB or smaller.' });
+        }
+        if (kind === 'profile' && !/^image\/(jpeg|png|gif|webp|avif|bmp)$/.test(contentType)) {
+            return res.status(400).json({ error: 'Profile photos must be JPEG, PNG, GIF, WebP, AVIF, or BMP images.' });
+        }
+        if (!isMongoConnected() || !mongoose.connection.db) {
+            return res.status(503).json({ error: 'File storage is temporarily unavailable. Please try again shortly.' });
+        }
+
+        let filename = req.get('x-file-name') || 'upload';
+        try {
+            filename = decodeURIComponent(filename);
+        } catch {
+            return res.status(400).json({ error: 'Invalid file name.' });
+        }
+        filename = filename.replace(/[\\/\u0000-\u001f\u007f]/g, '_').slice(-180) || 'upload';
+
+        const fileId = randomUUID();
+        const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: UPLOAD_BUCKET_NAME });
+        const upload = bucket.openUploadStreamWithId(fileId, filename, {
+            contentType,
+            metadata: { ownerUid: uid, kind }
+        });
+        upload.on('error', (error) => {
+            console.error('File upload failed:', error.message);
+            if (!res.headersSent) res.status(500).json({ error: 'Could not save this file. Please try again.' });
+        });
+        upload.on('finish', () => res.status(201).json({ fileId }));
+        upload.end(req.body);
+    } catch (error) {
+        console.error('Upload request failed:', error.message);
+        res.status(error.status || 500).json({
+            error: error.status ? error.message : 'Could not upload this file. Please try again.'
+        });
+    }
+});
+
+app.get('/api/uploads/:fileId', async (req, res) => {
+    const { fileId } = req.params;
+    if (!/^[0-9a-f-]{36}$/i.test(fileId)) return res.status(404).end();
+    if (!isMongoConnected() || !mongoose.connection.db) {
+        return res.status(503).json({ error: 'File storage is temporarily unavailable.' });
+    }
+
+    try {
+        const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: UPLOAD_BUCKET_NAME });
+        const file = await bucket.find({ _id: fileId }).next();
+        if (!file) return res.status(404).end();
+
+        const contentType = file.contentType || 'application/octet-stream';
+        const inline = /^(image\/(jpeg|png|gif|webp|avif|bmp)|audio\/|video\/)/i.test(contentType);
+        const filename = String(file.filename || 'download').replace(/[\r\n"]/g, '_');
+        res.set({
+            'Content-Type': contentType,
+            'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'X-Content-Type-Options': 'nosniff',
+            'Accept-Ranges': 'bytes'
+        });
+
+        const rangeHeader = req.get('range');
+        let start = 0;
+        let end = file.length - 1;
+        let statusCode = 200;
+        if (rangeHeader) {
+            const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+            if (!match || (!match[1] && !match[2])) {
+                res.set('Content-Range', `bytes */${file.length}`);
+                return res.status(416).end();
+            }
+
+            if (match[1]) {
+                start = Number(match[1]);
+                end = match[2] ? Number(match[2]) : end;
+            } else {
+                const suffixLength = Number(match[2]);
+                start = Math.max(0, file.length - suffixLength);
+            }
+            if (start >= file.length || end < start) {
+                res.set('Content-Range', `bytes */${file.length}`);
+                return res.status(416).end();
+            }
+            end = Math.min(end, file.length - 1);
+            statusCode = 206;
+            res.set('Content-Range', `bytes ${start}-${end}/${file.length}`);
+        }
+
+        res.status(statusCode).set('Content-Length', end - start + 1);
+        const download = bucket.openDownloadStream(file._id, { start, end: end + 1 });
+        download.on('error', (error) => {
+            console.error('File download failed:', error.message);
+            if (!res.headersSent) res.status(404).end();
+            else res.destroy(error);
+        });
+        download.pipe(res);
+    } catch (error) {
+        console.error('File download request failed:', error.message);
+        if (!res.headersSent) res.status(500).json({ error: 'Could not retrieve this file.' });
+    }
+});
 
 const pushTokenSchema = new mongoose.Schema({
     uid: { type: String, required: true, index: true },
