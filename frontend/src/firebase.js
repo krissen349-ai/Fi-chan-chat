@@ -26,4 +26,4 @@ const messagingPromise = isSupported()
     return null;
   });
 
-export { auth, db, firebaseConfig, messagingPromise };
+export { auth, db, messagingPromise };

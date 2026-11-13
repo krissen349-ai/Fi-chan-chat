@@ -9,7 +9,7 @@ import { deleteToken, getToken, onMessage } from "firebase/messaging";
 import { set, get, del } from 'idb-keyval';
 
 import { messagingPromise } from "./firebase";
-import { auth, db, firebaseConfig } from './firebase';
+import { auth, db } from './firebase';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -27,7 +27,10 @@ import {
   where, 
   deleteDoc, 
   doc,     
-  setDoc
+  setDoc,
+  getDoc,
+  updateDoc,
+  writeBatch
 } from 'firebase/firestore';
 
 const LineIcon = ({ name, size = 19 }) => {
@@ -85,28 +88,148 @@ const socket = io(getSocketBaseUrl(), {
   autoConnect: true
 });
 
+const FIRESTORE_UPLOAD_PREFIX = 'fi-upload:';
+const UPLOAD_CHUNK_BYTES = 525000;
+const UPLOAD_CHUNKS_PER_BATCH = 10;
+const uploadedFileUrlCache = new Map();
+
+const sanitizeUploadFileName = (fileName) => Array.from(fileName || 'upload', character => {
+  const codePoint = character.codePointAt(0);
+  return character === '/' || character === '\\' || codePoint < 32 || (codePoint >= 127 && codePoint <= 159)
+    ? '_'
+    : character;
+}).join('').slice(-180);
+
+const getUploadErrorMessage = (error) => {
+  if (error?.code === 'permission-denied') {
+    return 'Firestore is blocking file uploads. Deploy the updated firestore.rules file, then try again.';
+  }
+  if (error?.code === 'unavailable') {
+    return 'Firestore is temporarily offline. Check your connection and try again.';
+  }
+  return error?.message || 'The file could not be uploaded.';
+};
+
+const getUploadedFileObjectUrl = async (fileUrl) => {
+  const fileId = fileUrl.slice(FIRESTORE_UPLOAD_PREFIX.length);
+  if (!/^[0-9a-f-]{36}$/i.test(fileId)) throw new Error('This shared file link is invalid.');
+  if (uploadedFileUrlCache.has(fileId)) return uploadedFileUrlCache.get(fileId);
+
+  const downloadPromise = (async () => {
+    const metadataSnapshot = await getDoc(doc(db, 'uploads', fileId));
+    if (!metadataSnapshot.exists() || metadataSnapshot.data().status !== 'ready') {
+      throw new Error('This file is not available yet. Ask the sender to upload it again.');
+    }
+
+    const metadata = metadataSnapshot.data();
+    const maxFileSize = metadata.kind === 'profile' ? 10 * 1024 * 1024
+      : metadata.kind === 'chat' ? 15 * 1024 * 1024 : 0;
+    if (!Number.isInteger(metadata.size) || metadata.size < 1 || metadata.size > maxFileSize
+      || !Number.isInteger(metadata.chunkCount)
+      || metadata.chunkCount !== Math.ceil(metadata.size / UPLOAD_CHUNK_BYTES)) {
+      throw new Error('This file has invalid upload information. Ask the sender to upload it again.');
+    }
+    const chunkSnapshots = await Promise.all(
+      Array.from({ length: metadata.chunkCount }, (_, index) =>
+        getDoc(doc(db, 'uploads', fileId, 'chunks', String(index)))
+      )
+    );
+    if (chunkSnapshots.some(snapshot => !snapshot.exists())) {
+      throw new Error('This file is incomplete. Ask the sender to upload it again.');
+    }
+
+    const bytes = new Uint8Array(metadata.size);
+    let byteOffset = 0;
+    for (const snapshot of chunkSnapshots) {
+      const binary = atob(snapshot.data().data);
+      for (let offset = 0; offset < binary.length; offset += 1) {
+        if (byteOffset >= bytes.length) throw new Error('This file has invalid upload data.');
+        bytes[byteOffset] = binary.charCodeAt(offset);
+        byteOffset += 1;
+      }
+    }
+    if (byteOffset !== metadata.size) throw new Error('This file is incomplete. Ask the sender to upload it again.');
+    return URL.createObjectURL(new Blob([bytes], { type: metadata.contentType || 'application/octet-stream' }));
+  })();
+
+  uploadedFileUrlCache.set(fileId, downloadPromise);
+  try {
+    const objectUrl = await downloadPromise;
+    uploadedFileUrlCache.set(fileId, objectUrl);
+    return objectUrl;
+  } catch (error) {
+    uploadedFileUrlCache.delete(fileId);
+    throw error;
+  }
+};
+
 const uploadFile = async (file, kind) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in before uploading files.');
-
-  const idToken = await user.getIdToken();
-  const response = await fetch(`${getBackendBaseUrl()}/api/uploads`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${idToken}`,
-      'Content-Type': 'application/octet-stream',
-      'X-File-Name': encodeURIComponent(file.name || 'upload'),
-      'X-File-Type': file.type || 'application/octet-stream',
-      'X-Upload-Kind': kind,
-      'X-Firebase-Api-Key': firebaseConfig.apiKey
-    },
-    body: file
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || !result.fileId) {
-    throw new Error(result.error || `Upload failed (HTTP ${response.status}).`);
+  if (!['chat', 'profile'].includes(kind)) throw new Error('Invalid upload type.');
+  const maxBytes = kind === 'profile' ? 10 * 1024 * 1024 : 15 * 1024 * 1024;
+  if (!file.size) throw new Error('Empty files cannot be uploaded.');
+  if (file.size > maxBytes) {
+    throw new Error(kind === 'profile' ? 'Profile photos must be 10 MB or smaller.' : 'Chat files must be 15 MB or smaller.');
   }
-  return `${getBackendBaseUrl()}/api/uploads/${result.fileId}`;
+
+  const fileId = crypto.randomUUID();
+  const chunkCount = Math.ceil(file.size / UPLOAD_CHUNK_BYTES);
+  const uploadRef = doc(db, 'uploads', fileId);
+  const safeName = sanitizeUploadFileName(file.name);
+  const metadata = {
+    ownerUid: user.uid,
+    fileName: safeName || 'upload',
+    contentType: file.type || 'application/octet-stream',
+    size: file.size,
+    kind,
+    chunkCount,
+    status: 'uploading',
+    createdAt: Date.now()
+  };
+
+  await setDoc(uploadRef, metadata);
+  try {
+    for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
+      const batch = writeBatch(db);
+      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
+      for (let index = batchStart; index < batchEnd; index += 1) {
+        const byteStart = index * UPLOAD_CHUNK_BYTES;
+        const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
+        let binaryChunk = '';
+        for (let offset = 0; offset < fileChunk.length; offset += 32768) {
+          binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
+        }
+        batch.set(doc(db, 'uploads', fileId, 'chunks', String(index)), {
+          ownerUid: user.uid,
+          data: btoa(binaryChunk)
+        });
+      }
+      await batch.commit();
+    }
+    await updateDoc(uploadRef, { status: 'ready' });
+  } catch (error) {
+    const cleanupBatches = [];
+    for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
+      const batch = writeBatch(db);
+      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
+      for (let index = batchStart; index < batchEnd; index += 1) {
+        batch.delete(doc(db, 'uploads', fileId, 'chunks', String(index)));
+      }
+      cleanupBatches.push(batch.commit());
+    }
+    const cleanupResults = await Promise.allSettled(cleanupBatches);
+    cleanupResults.filter(result => result.status === 'rejected')
+      .forEach(result => console.error('Could not clean up incomplete file upload:', result.reason));
+    try {
+      await deleteDoc(uploadRef);
+    } catch (cleanupError) {
+      console.error('Could not remove incomplete file metadata:', cleanupError);
+    }
+    throw error;
+  }
+
+  return `${FIRESTORE_UPLOAD_PREFIX}${fileId}`;
 };
 
 const ensureHostedImage = async (image) => {
@@ -119,6 +242,33 @@ const ensureHostedImage = async (image) => {
     'profile'
   );
 };
+
+function UploadedMedia({ mediaUrl, as: Element = 'img', ...props }) {
+  const [resolvedUrl, setResolvedUrl] = useState('');
+  const urlProp = Element === 'a' ? 'href' : 'src';
+
+  useEffect(() => {
+    let active = true;
+    if (!mediaUrl) {
+      setResolvedUrl('');
+      return () => { active = false; };
+    }
+
+    const resolveUrl = mediaUrl.startsWith(FIRESTORE_UPLOAD_PREFIX)
+      ? getUploadedFileObjectUrl(mediaUrl)
+      : Promise.resolve(mediaUrl);
+    resolveUrl.then(url => {
+      if (active) setResolvedUrl(url);
+    }).catch(error => {
+      console.error('Could not load shared file:', error);
+      if (active) setResolvedUrl('');
+    });
+
+    return () => { active = false; };
+  }, [mediaUrl]);
+
+  return <Element {...props} {...{ [urlProp]: resolvedUrl || undefined }} />;
+}
 
 function App() {
   const [showWelcomeSplash, setShowWelcomeSplash] = useState(false);
@@ -1164,7 +1314,7 @@ function App() {
         }
       } catch (error) {
         console.error(`Upload failed for ${file.name}:`, error);
-        alert(`Could not upload ${file.name}: ${error.message}`);
+        alert(`Could not upload ${file.name}: ${getUploadErrorMessage(error)}`);
         break;
       }
     }
@@ -1310,7 +1460,7 @@ function App() {
       alert("Profile updated permanently! ✨");
     } catch (error) {
       console.error("Update Error:", error.message);
-      alert(`Update Fail: ${error.message}`);
+      alert(`Update Fail: ${getUploadErrorMessage(error)}`);
     }
   };
 
@@ -1392,7 +1542,7 @@ function App() {
         setCustomPfpFile(null);
         setCustomPfp(null);
       } catch (error) {
-        alert(`Signup Fail: ${error.message}`);
+        alert(`Signup Fail: ${getUploadErrorMessage(error)}`);
       }
     } else {
       try {
@@ -1417,7 +1567,7 @@ function App() {
     return (
       <div className="welcome-splash-overlay">
         <div className="welcome-splash-card animate-pop-in">
-          <img src={currentUser?.pfp} alt="User Avatar" className="splash-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya'; }} />
+          <UploadedMedia mediaUrl={currentUser?.pfp} alt="User Avatar" className="splash-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=Amaya'; }} />
           <h2>Welcome back, <span className="splash-username">@{currentUser?.username}</span>! ✨</h2>
           <p>Setting up your private workspace...</p>
           <div className="splash-loader-bar">
@@ -1618,7 +1768,7 @@ function App() {
             </div>
           </div>
           <div className="user-badge">
-            <img src={currentUser?.pfp} alt="me" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+            <UploadedMedia mediaUrl={currentUser?.pfp} alt="me" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
             <span>@{currentUser?.username}</span>
           </div>
           {notificationStatus && <p role="status" style={{ margin: '8px 0 0', fontSize: '12px' }}>{notificationStatus}</p>}
@@ -1687,7 +1837,7 @@ function App() {
                       className="chat-item-row" 
                       onClick={() => setShowProfileModal(user)}
                     >
-                      <img className="avatar-icon" src={user.pfp} alt="" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+                      <UploadedMedia as="img" className="avatar-icon" mediaUrl={user.pfp} alt="" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                       <div className="item-details">
                         <h4>{user.username}</h4>
                         <p className={isOnline ? "online-tag" : "offline-tag"}>
@@ -1706,7 +1856,7 @@ function App() {
               {isEditingProfile ? (
                 <div className="edit-form">
                   <div className="login-avatar-preview-box premium-avatar-wrapper" style={{ margin: '0 auto 12px auto' }}>
-                    <img src={editPfp || currentUser.pfp} alt="Profile Preview" className="login-live-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+                    <UploadedMedia mediaUrl={editPfp || currentUser.pfp} alt="Profile Preview" className="login-live-avatar" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                   </div>
 
                   <div className="avatar-control-buttons" style={{ marginBottom: '12px' }}>
@@ -1760,7 +1910,7 @@ function App() {
                 </div>
               ) : (
                 <div className="profile-view">
-                  <img src={currentUser.pfp} alt="profile" className="large-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+                  <UploadedMedia mediaUrl={currentUser.pfp} alt="profile" className="large-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
                   <h3>{currentUser.username}</h3>
                   <p className="bio-text">"{currentUser.bio}"</p>
                   <button className="edit-profile-btn" onClick={() => {
@@ -1786,7 +1936,7 @@ function App() {
               {activeChat.type === 'group' ? (
                 <div className="header-avatar group-header-avatar" aria-label="Global Group avatar">🌐</div>
               ) : (
-                <img className="header-avatar" src={activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`} alt="chat-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
+                <UploadedMedia as="img" className="header-avatar" mediaUrl={activeChat.userObj?.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.name}`} alt="chat-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} />
               )}
               <div className="header-details">
                 <h3>{activeChat.name}</h3>
@@ -1807,8 +1957,8 @@ function App() {
                   <div key={msg.id || index} className={`message-row ${isMe ? 'outgoing' : 'incoming'}`}>
                     <div style={{ display: 'flex', alignItems: 'flex-end', width: '100%', justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
                       {!isMe && (
-                        <img 
-                          src={msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderId}`} 
+                        <UploadedMedia
+                          mediaUrl={msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderId}`}
                           alt="user-pfp" 
                           className="message-avatar" 
                           onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} 
@@ -1830,14 +1980,14 @@ function App() {
                             setActiveMenuMsgId(activeMenuMsgId === msg.id ? null : msg.id);
                           }}
                         >
-                          {msg.image && <img src={msg.image} alt="Sent attachment" className="chat-shared-image" />}
-                          {msg.fileUrl && msg.fileType === 'image' && <img src={msg.fileUrl} alt="Sent attachment" className="chat-shared-image" />}
-                          {msg.fileUrl && msg.fileType === 'video' && <video src={msg.fileUrl} controls className="chat-shared-video" />}
-                          {msg.fileUrl && msg.fileType === 'audio' && <audio src={msg.fileUrl} controls className="chat-shared-audio" />}
+                          {msg.image && <UploadedMedia mediaUrl={msg.image} alt="Sent attachment" className="chat-shared-image" />}
+                          {msg.fileUrl && msg.fileType === 'image' && <UploadedMedia mediaUrl={msg.fileUrl} alt="Sent attachment" className="chat-shared-image" />}
+                          {msg.fileUrl && msg.fileType === 'video' && <UploadedMedia as="video" mediaUrl={msg.fileUrl} controls className="chat-shared-video" />}
+                          {msg.fileUrl && msg.fileType === 'audio' && <UploadedMedia as="audio" mediaUrl={msg.fileUrl} controls className="chat-shared-audio" />}
                           {msg.fileUrl && msg.fileType === 'file' && (
-                            <a href={msg.fileUrl} target="_blank" rel="noreferrer" download={msg.fileName || true}>
+                            <UploadedMedia as="a" mediaUrl={msg.fileUrl} target="_blank" rel="noreferrer" download={msg.fileName || true}>
                               📎 {msg.fileName || 'Download file'}
-                            </a>
+                            </UploadedMedia>
                           )}
                           {msg.text && (
                             <p style={{ margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
@@ -2083,7 +2233,7 @@ function App() {
       {showProfileModal && (
         <div className="modal-overlay">
           <div className="custom-popup-card">
-            <img src={showProfileModal.pfp} alt="" className="modal-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }}/>
+            <UploadedMedia mediaUrl={showProfileModal.pfp} alt="" className="modal-pfp" onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }}/>
             <h3>{showProfileModal.username}</h3>
             <p className="modal-bio">"{showProfileModal.bio}"</p>
             <div className="modal-actions-row">
