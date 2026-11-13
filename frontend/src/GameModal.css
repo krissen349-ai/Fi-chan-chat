@@ -527,9 +527,10 @@
   font-weight: 800;
   padding: 10px 16px;
   margin-bottom: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 23, 42, 0.85);
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: inset 0 0 10px rgba(56, 189, 248, 0.1);
 }
 
 .p1-score {
@@ -546,11 +547,11 @@
   position: relative;
   width: 100%;
   max-width: 800px;
-  background-color: #121820;
-  border-radius: 16px;
+  background: linear-gradient(180deg, #101827 0%, #0f172a 100%);
+  border-radius: 18px;
   overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7), inset 0 0 40px rgba(0, 0, 0, 0.8);
+  border: 2px solid rgba(148, 163, 184, 0.25);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.9), inset 0 0 60px rgba(14, 116, 144, 0.2);
   aspect-ratio: 800 / 500;
   touch-action: none;
 }
@@ -559,66 +560,53 @@
   width: 100%;
   height: 100%;
   display: block;
+  background: radial-gradient(circle at 50% 40%, #1e293b 0%, #0f172a 70%);
 }
 
-.fire-btn-floating {
+.tank-tactical-button {
   position: absolute;
-  bottom: 22px;
-  right: 22px;
-  width: 78px;
-  height: 78px;
-  background: radial-gradient(circle at 30% 30%, #ff5252, #c62828);
-  border: 3px solid rgba(255, 255, 255, 0.95);
+  right: 18px;
+  bottom: 18px;
+  width: 120px;
+  height: 120px;
+  border: 3px solid rgba(255, 255, 255, 0.75);
   border-radius: 50%;
-  box-shadow: 0 8px 25px rgba(255, 82, 82, 0.6), inset 0 3px 6px rgba(255, 255, 255, 0.4);
+  background: radial-gradient(circle at 30% 30%, #f97316, #dc2626 58%, #7f1d1d 100%);
+  box-shadow: 0 14px 26px rgba(239, 68, 68, 0.35), inset 0 6px 12px rgba(255, 255, 255, 0.2);
+  color: #fff;
   display: flex;
-  justify-content: center;
   align-items: center;
-  color: white;
-  font-size: 32px;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
   z-index: 25;
   cursor: pointer;
   touch-action: none;
-  transition: transform 0.1s ease;
-}
-
-.fire-btn-floating:active {
-  transform: scale(0.92);
-  background: radial-gradient(circle at 30% 30%, #e53935, #b71c1c);
-}
-
-.tank-dpad {
-  position: absolute;
-  bottom: 12px;
-  left: 12px;
-  width: 136px;
-  height: 136px;
-  z-index: 24;
-  touch-action: none;
-}
-
-.tank-control {
-  position: absolute;
-  display: grid;
-  width: 42px;
-  height: 42px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.78);
-  color: #fff;
-  font-size: 19px;
-  font-weight: 900;
-  touch-action: none;
   user-select: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-.tank-control:active { background: rgba(56, 189, 248, 0.78); }
-.tank-control-forward { top: 0; left: 47px; }
-.tank-control-backward { bottom: 0; left: 47px; }
-.tank-control-left { top: 47px; left: 0; }
-.tank-control-right { top: 47px; right: 0; }
+.tank-tactical-button:active {
+  transform: scale(0.94);
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.3), inset 0 8px 14px rgba(255, 255, 255, 0.15);
+}
+
+.tank-button-emoji {
+  font-size: 1.9rem;
+  line-height: 1;
+}
+
+.tank-button-label {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.tank-button-sub {
+  font-size: 10px;
+  opacity: 0.8;
+  letter-spacing: 0.08em;
+}
 
 .fullscreen-btn {
   width: 100%;
@@ -643,8 +631,20 @@
 }
 
 @media (max-width: 580px) {
-  .tank-dpad { transform: scale(0.82); transform-origin: left bottom; }
-  .fire-btn-floating { right: 12px; bottom: 12px; width: 66px; height: 66px; }
+  .tank-tactical-button {
+    width: 92px;
+    height: 92px;
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .tank-button-label {
+    font-size: 9px;
+  }
+
+  .tank-button-sub {
+    font-size: 8px;
+  }
 }
 
 .tank-battle-wrap:fullscreen,

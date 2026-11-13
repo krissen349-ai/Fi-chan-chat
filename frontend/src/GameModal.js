@@ -152,6 +152,17 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       { x: 560, y: 160, w: 60, h: 220 },
       { x: 330, y: 210, w: 140, h: 80 }
     ];
+    const HOLD_THRESHOLD_MS = 160;
+    const AUTO_ROTATION_SPEED = 0.055;
+    const MOVE_SPEED = 3.2;
+    const lastNetworkUpdateRef = { current: 0 };
+    let lastFrameTime = performance.now();
+
+    const pointerState = {
+      pointerDown: false,
+      startedAt: 0,
+      holdActive: false
+    };
 
     class Tank {
       constructor(x, y, mainColor, accentColor, angle, isMe) {
@@ -161,8 +172,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.accentColor = accentColor;
         this.size = 32;
         this.angle = angle;
-        this.speed = 3.2; // Driving speed when holding fire button
-        this.rotSpeed = 0.045; // Smooth 360 rotation speed
+        this.speed = MOVE_SPEED;
+        this.rotSpeed = AUTO_ROTATION_SPEED;
         this.cooldown = 0;
         this.maxHealth = 100;
         this.health = 100;
@@ -170,29 +181,42 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.muzzleFlash = 0;
       }
 
-      update(controls) {
+      update(controls, deltaTime = 1 / 60) {
         if (!this.isMe) return;
 
         let moved = false;
+        const now = performance.now();
+        const frameScale = deltaTime * 60;
+        const moveStep = this.speed * frameScale;
+        const rotateStep = this.rotSpeed * frameScale;
+
+        if (!pointerState.pointerDown && !pointerState.holdActive) {
+          this.angle += rotateStep;
+          moved = true;
+        }
+
+        if (pointerState.holdActive) {
+          const nextX = this.x + Math.cos(this.angle) * moveStep;
+          const nextY = this.y + Math.sin(this.angle) * moveStep;
+          if (!this.checkWallCollision(nextX, nextY)) {
+            trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
+            this.x = nextX;
+            this.y = nextY;
+            moved = true;
+          }
+        }
 
         if (controls.left || controls.right) {
-          this.angle += controls.left ? -this.rotSpeed : this.rotSpeed;
+          this.angle += controls.left ? -rotateStep * 1.5 : rotateStep * 1.5;
           moved = true;
         }
 
         const direction = controls.forward ? 1 : controls.backward ? -1 : 0;
         if (direction) {
-          let nextX = this.x + Math.cos(this.angle) * this.speed * direction;
-          let nextY = this.y + Math.sin(this.angle) * this.speed * direction;
+          const nextX = this.x + Math.cos(this.angle) * moveStep * direction;
+          const nextY = this.y + Math.sin(this.angle) * moveStep * direction;
           if (!this.checkWallCollision(nextX, nextY)) {
-            trackMarks.push({
-              x: this.x,
-              y: this.y,
-              angle: this.angle,
-              alpha: 0.6,
-              createdAt: Date.now()
-            });
-
+            trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
             this.x = nextX;
             this.y = nextY;
             moved = true;
@@ -202,7 +226,8 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
         this.y = Math.max(this.size, Math.min(canvas.height - this.size, this.y));
 
-        if (moved && socket && roomId) {
+        if (moved && socket && roomId && now - lastNetworkUpdateRef.current > 50) {
+          lastNetworkUpdateRef.current = now;
           socket.emit('game_action', {
             gameRoomId: roomId,
             action: { type: 'tank_move', x: this.x, y: this.y, angle: this.angle, playerIndex }
@@ -224,37 +249,29 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       draw() {
         ctx.save();
         ctx.translate(this.x, this.y);
-
-        // Health bar
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.fillRect(-22, -this.size - 12, 44, 6);
         ctx.fillStyle = this.health > 40 ? '#10b981' : '#ef4444';
         ctx.fillRect(-22, -this.size - 12, (this.health / this.maxHealth) * 44, 6);
 
         ctx.rotate(this.angle);
-
-        // Tracks
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(-this.size/2 - 2, -this.size/2 - 2, this.size + 4, 8);
         ctx.fillRect(-this.size/2 - 2, this.size/2 - 6, this.size + 4, 8);
 
-        // Tank Body
         ctx.fillStyle = this.mainColor;
         ctx.beginPath();
         ctx.roundRect(-this.size/2, -this.size/2 + 4, this.size, this.size - 8, 4);
         ctx.fill();
 
-        // Inner plate
         ctx.fillStyle = this.accentColor;
         ctx.fillRect(-10, -8, 20, 16);
 
-        // Tank Barrel
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(0, -4, 26, 8);
         ctx.fillStyle = '#334155';
         ctx.fillRect(20, -5, 6, 10);
 
-        // Muzzle Flash Effect
         if (this.muzzleFlash > 0) {
           ctx.fillStyle = '#f59e0b';
           ctx.beginPath();
@@ -287,7 +304,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     window.triggerTankShoot = () => {
       const me = playerIndex === 0 ? p1 : p2;
       if (me.cooldown > 0) return;
-      
       me.muzzleFlash = 4;
       soundFX.playShoot();
 
@@ -297,9 +313,21 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       me.cooldown = 16;
     };
 
-    window.setTouchKey = (key, isDown) => {
-      keys[key] = isDown;
+    const handleTouchControl = (pressed) => {
+      if (pressed) {
+        pointerState.pointerDown = true;
+        pointerState.startedAt = performance.now();
+        pointerState.holdActive = false;
+      } else {
+        const elapsed = performance.now() - pointerState.startedAt;
+        const shouldFire = elapsed < HOLD_THRESHOLD_MS;
+        pointerState.pointerDown = false;
+        pointerState.holdActive = false;
+        if (shouldFire && window.triggerTankShoot) window.triggerTankShoot();
+      }
     };
+
+    window.handleTankTouchControl = handleTouchControl;
 
     const keyBindings = {
       w: 'forward', ArrowUp: 'forward',
@@ -323,11 +351,33 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
     window.addEventListener('blur', releaseKeys);
 
     const gameLoop = () => {
+      const now = Date.now();
+      const me = playerIndex === 0 ? p1 : p2;
+      const deltaTime = Math.min((performance.now() - lastFrameTime) / 1000, 0.033);
+      lastFrameTime = performance.now();
+      const controls = {
+        forward: Boolean(keys.forward || keys.w || keys.ArrowUp),
+        backward: Boolean(keys.backward || keys.s || keys.ArrowDown),
+        left: Boolean(keys.left || keys.a || keys.ArrowLeft),
+        right: Boolean(keys.right || keys.d || keys.ArrowRight)
+      };
+
+      if (pointerState.pointerDown && !pointerState.holdActive) {
+        if (performance.now() - pointerState.startedAt >= HOLD_THRESHOLD_MS) {
+          pointerState.holdActive = true;
+        }
+      }
+
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Grid background pattern
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      const bgGrad = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, 50, canvas.width / 2, canvas.height / 2, canvas.width * 0.7);
+      bgGrad.addColorStop(0, '#1e293b');
+      bgGrad.addColorStop(1, '#0f172a');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.12)';
       ctx.lineWidth = 1;
       for (let x = 0; x < canvas.width; x += 40) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
@@ -336,8 +386,6 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
       }
 
-      // Render and fade track marks (2 seconds limit)
-      const now = Date.now();
       for (let i = trackMarks.length - 1; i >= 0; i--) {
         const mark = trackMarks[i];
         const age = (now - mark.createdAt) / 1000;
@@ -346,33 +394,28 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
           continue;
         }
         mark.alpha = 0.5 * (1 - age / 2);
-
         ctx.save();
         ctx.translate(mark.x, mark.y);
         ctx.rotate(mark.angle);
-        ctx.fillStyle = `rgba(0, 0, 0, ${mark.alpha})`;
+        ctx.fillStyle = `rgba(15, 23, 42, ${mark.alpha})`;
         ctx.fillRect(-12, -12, 10, 4);
         ctx.fillRect(-12, 8, 10, 4);
         ctx.restore();
       }
 
       for (let b of barriers) {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+        ctx.fillRect(b.x + 8, b.y + 8, b.w, b.h);
         ctx.fillStyle = '#334155';
         ctx.fillRect(b.x, b.y, b.w, b.h);
-        ctx.strokeStyle = '#475569';
+        ctx.strokeStyle = '#64748b';
         ctx.lineWidth = 4;
         ctx.strokeRect(b.x, b.y, b.w, b.h);
       }
 
-      const controls = {
-        forward: Boolean(keys.forward || keys.w || keys.ArrowUp),
-        backward: Boolean(keys.backward || keys.s || keys.ArrowDown),
-        left: Boolean(keys.left || keys.a || keys.ArrowLeft),
-        right: Boolean(keys.right || keys.d || keys.ArrowRight)
-      };
-      p1.update(playerIndex === 0 ? controls : {});
-      p2.update(playerIndex === 1 ? controls : {});
-      
+      p1.update(playerIndex === 0 ? controls : {}, deltaTime);
+      p2.update(playerIndex === 1 ? controls : {}, deltaTime);
+
       if (p1.cooldown > 0) p1.cooldown--;
       if (p2.cooldown > 0) p2.cooldown--;
 
@@ -380,14 +423,23 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       p2.draw();
 
       for (const bullet of bullets) {
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = '#f59e0b';
-        ctx.fillStyle = '#fbbf24';
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = bullet.ownerIndex === 0 ? '#38bdf8' : '#f87171';
+        ctx.fillStyle = '#f8fafc';
         ctx.beginPath();
         ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
       }
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.setLineDash([6, 8]);
+      ctx.beginPath();
+      ctx.moveTo(me.x, me.y);
+      ctx.lineTo(me.x + Math.cos(me.angle) * 140, me.y + Math.sin(me.angle) * 140);
+      ctx.stroke();
+      ctx.restore();
 
       animationFrameId = requestAnimationFrame(gameLoop);
     };
@@ -400,7 +452,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', releaseKeys);
       delete window.triggerTankShoot;
-      delete window.setTouchKey;
+      delete window.handleTankTouchControl;
       cancelAnimationFrame(animationFrameId);
     };
   }, [gameId, playerIndex, socket, roomId]);
@@ -576,50 +628,41 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         <span className="p1-score">Blue (P1): {tankScores.p1}</span>
         <span className="p2-score">Red (P2): {tankScores.p2}</span>
       </div>
-      
+
       <div className="canvas-container">
         <canvas ref={canvasRef} width={800} height={500} className="tank-canvas" />
 
-        <button 
-          className="fire-btn-floating"
+        <button
           type="button"
-          aria-label="Fire"
+          className="tank-tactical-button"
+          aria-label="Move and fire tank"
           onPointerDown={(event) => {
             event.preventDefault();
-            if (window.triggerTankShoot) window.triggerTankShoot();
+            if (window.handleTankTouchControl) window.handleTankTouchControl(true);
+          }}
+          onPointerUp={(event) => {
+            event.preventDefault();
+            if (window.handleTankTouchControl) window.handleTankTouchControl(false);
+          }}
+          onPointerLeave={(event) => {
+            event.preventDefault();
+            if (window.handleTankTouchControl) window.handleTankTouchControl(false);
+          }}
+          onPointerCancel={(event) => {
+            event.preventDefault();
+            if (window.handleTankTouchControl) window.handleTankTouchControl(false);
           }}
         >
-          🔥
+          <span className="tank-button-emoji">⚡</span>
+          <span className="tank-button-label">TAP FIRE</span>
+          <span className="tank-button-sub">HOLD MOVE</span>
         </button>
-        <div className="tank-dpad" aria-label="Tank movement controls">
-          {[
-            { key: 'left', label: '◀', name: 'Turn left' },
-            { key: 'forward', label: '▲', name: 'Move forward' },
-            { key: 'backward', label: '▼', name: 'Move backward' },
-            { key: 'right', label: '▶', name: 'Turn right' }
-          ].map(control => (
-            <button
-              type="button"
-              className={`tank-control tank-control-${control.key}`}
-              key={control.key}
-              aria-label={control.name}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.currentTarget.setPointerCapture(event.pointerId);
-                if (window.setTouchKey) window.setTouchKey(control.key, true);
-              }}
-              onPointerUp={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
-              onPointerCancel={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
-              onPointerLeave={() => { if (window.setTouchKey) window.setTouchKey(control.key, false); }}
-            >{control.label}</button>
-          ))}
-        </div>
       </div>
 
       <GameFullscreenButton targetRef={tankWrapRef} />
 
       <p className="tank-controls-tip">
-        WASD / arrows to drive · Space or 🔥 to fire
+        Tap = fire · Hold = move · Desktop: WASD / arrows + Space
       </p>
     </div>
   );
