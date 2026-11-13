@@ -104,6 +104,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
     const handleGameState = (nextState) => {
       if (nextState.gameRoomId && nextState.gameRoomId !== roomId) return;
+      if (gameId === 'tank-battle') return;
       setGameState(nextState);
       setLocalChoiceSent(Boolean(nextState.pending?.[playerIndex] && !nextState.roundComplete));
       setActionError('');
@@ -132,7 +133,7 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       socket.off('game_session_missing', handleMissingSession);
       socket.off('game_opponent_left', handleOpponentLeft);
     };
-  }, [socket, roomId, playerIndex]);
+  }, [socket, roomId, playerIndex, gameId]);
 
   /* ==========================================================
      ================ TANK BATTLE ENGINE SECTION ==============
@@ -344,7 +345,13 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
       } else {
         bullets = [];
       }
-      if (Array.isArray(data.scores)) setTankScores({ p1: data.scores[0], p2: data.scores[1] });
+      if (Array.isArray(data.scores)) {
+        setTankScores(previous => (
+          previous.p1 === data.scores[0] && previous.p2 === data.scores[1]
+            ? previous
+            : { p1: data.scores[0], p2: data.scores[1] }
+        ));
+      }
     };
     const handleTankMoveRejected = (data) => handleRemoteAction(data, true);
     socket.on('game_state', handleRemoteAction);

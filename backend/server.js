@@ -637,7 +637,7 @@ io.on('connection', (socket) => {
                 const nextAngle = Number(action.angle);
                 const tank = state.tanks[playerIndex];
                 const opponentTank = state.tanks[1 - playerIndex];
-                const elapsedSeconds = Math.min(0.35, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
+                const elapsedSeconds = Math.min(1, Math.max(0.04, (now - state.lastMoveAt[playerIndex]) / 1000));
                 if (!isValidTankMove({
                     tank,
                     opponentTank,

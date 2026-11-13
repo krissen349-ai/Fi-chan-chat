@@ -21,6 +21,17 @@ test('accepts normal movement and rotation at the 20 Hz sync rate', () => {
   }), true);
 });
 
+test('allows realistic movement after delayed network updates', () => {
+  assert.equal(isValidTankMove({
+    tank,
+    opponentTank,
+    x: 190,
+    y: 250,
+    angle: 0.9,
+    elapsedSeconds: 0.5
+  }), true);
+});
+
 test('rejects movement that exceeds the elapsed-time speed allowance', () => {
   assert.equal(isValidTankMove({
     tank,
