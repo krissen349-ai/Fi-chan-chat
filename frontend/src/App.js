@@ -9,7 +9,7 @@ import { deleteToken, getToken, onMessage } from "firebase/messaging";
 import { set, get, del } from 'idb-keyval';
 
 import { messagingPromise } from "./firebase";
-import { auth, db } from './firebase';
+import { auth, db, storage } from './firebase';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -29,6 +29,7 @@ import {
   doc,     
   setDoc
 } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 
 const LineIcon = ({ name, size = 19 }) => {
   const paths = {
@@ -85,34 +86,28 @@ const socket = io(getSocketBaseUrl(), {
   autoConnect: true
 });
 
-const uploadToCloudinary = async (file) => {
-  const cloudName = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME?.trim();
-  const uploadPreset = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET?.trim();
-  if (!cloudName || !uploadPreset) {
-    throw new Error('Uploads are not configured. Set the Cloudinary cloud name and unsigned upload preset.');
-  }
+const uploadFileToStorage = async (file, folder) => {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Please sign in before uploading files.');
 
-  const resourceType = /^(image|video|audio)\//.test(file.type) ? 'auto' : 'raw';
-  const formData = new FormData();
-  formData.append('file', file, file.name || 'upload');
-  formData.append('upload_preset', uploadPreset);
-
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`, {
-    method: 'POST',
-    body: formData
+  const safeName = (file.name || 'upload').replace(/[^\w.-]/g, '_').slice(-100);
+  const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}_${safeName}`;
+  const fileRef = ref(storage, `users/${user.uid}/${folder}/${uniqueName}`);
+  const snapshot = await uploadBytes(fileRef, file, {
+    contentType: file.type || 'application/octet-stream'
   });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || !result.secure_url) {
-    throw new Error(result.error?.message || `Upload failed (HTTP ${response.status}). Check the Cloudinary cloud name and unsigned preset.`);
-  }
-  return result.secure_url;
+  return getDownloadURL(snapshot.ref);
 };
 
 const ensureHostedImage = async (image) => {
   if (!image?.startsWith('data:image')) return image;
-  const blob = await (await fetch(image)).blob();
+  const response = await fetch(image);
+  const blob = await response.blob();
   const extension = blob.type.split('/')[1] || 'jpg';
-  return uploadToCloudinary(new File([blob], `profile.${extension}`, { type: blob.type || 'image/jpeg' }));
+  return uploadFileToStorage(
+    new File([blob], `profile.${extension}`, { type: blob.type || 'image/jpeg' }),
+    'profile'
+  );
 };
 
 function App() {
@@ -130,6 +125,7 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('chat_theme') || 'dark');
   const [avatarSeed, setAvatarSeed] = useState('Amaya'); 
   const [customPfp, setCustomPfp] = useState(null);
+  const [customPfpFile, setCustomPfpFile] = useState(null);
   const [showAvatarModal, setShowAvatarModal] = useState(false); 
 
   const [email, setEmail] = useState('');
@@ -239,6 +235,19 @@ function App() {
   const [editUsername, setEditUsername] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editPfp, setEditPfp] = useState('');
+  const [editPfpFile, setEditPfpFile] = useState(null);
+
+  useEffect(() => {
+    return () => {
+      if (customPfp?.startsWith('blob:')) URL.revokeObjectURL(customPfp);
+    };
+  }, [customPfp]);
+
+  useEffect(() => {
+    return () => {
+      if (editPfp?.startsWith('blob:')) URL.revokeObjectURL(editPfp);
+    };
+  }, [editPfp]);
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [scrollDirectionUp, setScrollDirectionUp] = useState(true);
@@ -1102,7 +1111,7 @@ function App() {
     const isGlobal = chat.id === 'global-group' || chat.id === 'global' || chat.name === 'Global Group';
     for (const file of files) {
       try {
-        const uploadedUrl = await uploadToCloudinary(file);
+        const uploadedUrl = await uploadFileToStorage(file, 'chat-files');
         const fileType = file.type.startsWith('image/') ? 'image'
           : file.type.startsWith('video/') ? 'video'
             : file.type.startsWith('audio/') ? 'audio' : 'file';
@@ -1152,7 +1161,7 @@ function App() {
     setReplyToMsg(null);
   };
 
-  const handleProfilePhotoUpload = async (event, setPhoto) => {
+  const handleProfilePhotoUpload = (event, setPhoto, setPhotoFile) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
@@ -1161,16 +1170,12 @@ function App() {
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
-      alert('Profile photos must be smaller than 10 MB.');
+      alert('Profile photos must be 10 MB or smaller.');
       return;
     }
 
-    try {
-      setPhoto(await uploadToCloudinary(file));
-    } catch (error) {
-      console.error('Profile photo upload failed:', error);
-      alert(`Could not upload profile photo: ${error.message}`);
-    }
+    setPhotoFile(file);
+    setPhoto(URL.createObjectURL(file));
   };
 
 // 🎮 Game Invite Send Handler
@@ -1250,7 +1255,9 @@ function App() {
   const saveProfileEdit = async () => {
     if (!editUsername.trim()) return alert("Username khali nahi chodh sakte!");
     try {
-      const finalPfp = await ensureHostedImage(editPfp || currentUser.pfp);
+      const finalPfp = editPfpFile
+        ? await uploadFileToStorage(editPfpFile, 'profile')
+        : await ensureHostedImage(editPfp || currentUser.pfp);
       
       if (auth.currentUser) {
         await updateProfile(auth.currentUser, {
@@ -1283,6 +1290,7 @@ function App() {
       
       setCurrentUser(updatedUser);
       socket.emit('update_profile', updatedUser);
+      setEditPfpFile(null);
       setIsEditingProfile(false);
       alert("Profile updated permanently! ✨");
     } catch (error) {
@@ -1327,11 +1335,12 @@ function App() {
     if (isSignUp) {
       if (!username.trim()) return alert("Username toh chun lo bhai!");
       try {
-        const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
-        const photoToSave = await ensureHostedImage(customPfp || fallbackAvatar);
-
         const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password.trim());
         const user = userCredential.user;
+        const fallbackAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${avatarSeed}`;
+        const photoToSave = customPfpFile
+          ? await uploadFileToStorage(customPfpFile, 'profile')
+          : await ensureHostedImage(customPfp || fallbackAvatar);
 
         await updateProfile(user, { 
           displayName: username.trim(), 
@@ -1365,6 +1374,8 @@ function App() {
 
         setCurrentUser(finalUser);
         setIsLoggedIn(true);
+        setCustomPfpFile(null);
+        setCustomPfp(null);
       } catch (error) {
         alert(`Signup Fail: ${error.message}`);
       }
@@ -1436,7 +1447,7 @@ function App() {
                 <label className="ctrl-btn upload-btn glass-btn">
                   📁 Upload Photo
                   <input type="file" accept="image/*" onChange={async (e) => {
-                    await handleProfilePhotoUpload(e, setCustomPfp);
+                    await handleProfilePhotoUpload(e, setCustomPfp, setCustomPfpFile);
                   }} style={{ display: 'none' }} />
                 </label>
               </div>
@@ -1528,7 +1539,12 @@ function App() {
                   <div 
                     key={seed} 
                     className={`avatar-grid-item ${avatarSeed === seed && !customPfp ? 'active-seed' : ''}`} 
-                    onClick={() => { setAvatarSeed(seed); setCustomPfp(null); setShowAvatarModal(false); }}
+                    onClick={() => {
+                      setAvatarSeed(seed);
+                      setCustomPfp(null);
+                      setCustomPfpFile(null);
+                      setShowAvatarModal(false);
+                    }}
                   >
                     <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${seed}`} alt={seed} />
                   </div>
@@ -1601,6 +1617,7 @@ function App() {
             setEditUsername(currentUser?.username || '');
             setEditBio(currentUser?.bio || '');
             setEditPfp(currentUser?.pfp || '');
+            setEditPfpFile(null);
           }}>⚙️ Profile</button>
         </div>
 
@@ -1684,7 +1701,7 @@ function App() {
                     <label className="ctrl-btn upload-btn glass-btn">
                       📁 Upload Photo
                       <input type="file" accept="image/*" onChange={async (e) => {
-                        await handleProfilePhotoUpload(e, setEditPfp);
+                        await handleProfilePhotoUpload(e, setEditPfp, setEditPfpFile);
                       }} style={{ display: 'none' }} />
                     </label>
                   </div>
@@ -1717,7 +1734,11 @@ function App() {
                     <button className="done-btn premium-btn-gradient" style={{ flex: 1, padding: '10px', borderRadius: '8px', border: 'none', cursor: 'pointer', color: '#fff', fontWeight: 'bold' }} onClick={saveProfileEdit}>
                       Save Changes ✨
                     </button>
-                    <button className="glass-btn" style={{ padding: '10px 14px', borderRadius: '8px', cursor: 'pointer' }} onClick={() => setIsEditingProfile(false)}>
+                    <button className="glass-btn" style={{ padding: '10px 14px', borderRadius: '8px', cursor: 'pointer' }} onClick={() => {
+                      setEditPfp(currentUser.pfp);
+                      setEditPfpFile(null);
+                      setIsEditingProfile(false);
+                    }}>
                       Cancel
                     </button>
                   </div>
@@ -1732,6 +1753,7 @@ function App() {
                     setEditUsername(currentUser.username);
                     setEditBio(currentUser.bio);
                     setEditPfp(currentUser.pfp);
+                    setEditPfpFile(null);
                   }}>Edit Profile</button>
                   <button className="logout-btn" onClick={handleLogout}>Log Out</button>
                 </div>
@@ -2127,6 +2149,7 @@ function App() {
                     const selectedAvatarUrl = `https://api.dicebear.com/7.x/adventurer/svg?seed=${seed}`;
                     if (isEditingProfile) {
                       setEditPfp(selectedAvatarUrl);
+                      setEditPfpFile(null);
                     }
                     setShowAvatarModal(false); 
                   }}

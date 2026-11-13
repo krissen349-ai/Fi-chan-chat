@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 import { getMessaging, isSupported } from "firebase/messaging";
 
 const firebaseConfig = {
@@ -18,6 +19,7 @@ const app = initializeApp(firebaseConfig);
 // Initialize Services
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 const messagingPromise = isSupported()
   .then((supported) => supported ? getMessaging(app) : null)
@@ -26,4 +28,4 @@ const messagingPromise = isSupported()
     return null;
   });
 
-export { auth, db, messagingPromise };
+export { auth, db, storage, messagingPromise };
