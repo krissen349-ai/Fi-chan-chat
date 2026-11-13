@@ -55,13 +55,28 @@ const io = new Server(server, {
 
 // 🍃 MongoDB Connection Setup
 const MONGO_URI = process.env.MONGO_URI;
+let mongoConnectPromise = null;
+const connectMongo = () => {
+    if (mongoose.connection.readyState === 1) return Promise.resolve();
+    if (!MONGO_URI) return Promise.reject(new Error('MONGO_URI is not configured.'));
+    if (mongoConnectPromise) return mongoConnectPromise;
 
-mongoose.connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 30000,
-    connectTimeoutMS: 30000
-})
-  .then(() => console.log("✅ MongoDB Connected Successfully! 🍃"))
-  .catch((err) => console.log("❌ DB Connection Error:", err.message));
+    mongoConnectPromise = mongoose.connect(MONGO_URI, {
+        serverSelectionTimeoutMS: 8000,
+        connectTimeoutMS: 8000
+    })
+        .then(() => console.log("✅ MongoDB Connected Successfully! 🍃"))
+        .catch((error) => {
+            console.error("❌ DB Connection Error:", error.message);
+            throw error;
+        })
+        .finally(() => {
+            mongoConnectPromise = null;
+        });
+    return mongoConnectPromise;
+};
+
+connectMongo().catch(() => {});
 
 let firebaseAdminReady = false;
 if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -164,8 +179,15 @@ app.post('/api/uploads', (req, res, next) => {
         if (kind === 'profile' && !/^image\/(jpeg|png|gif|webp|avif|bmp)$/.test(contentType)) {
             return res.status(400).json({ error: 'Profile photos must be JPEG, PNG, GIF, WebP, AVIF, or BMP images.' });
         }
+        try {
+            await connectMongo();
+        } catch {
+            return res.status(503).json({
+                error: 'File storage is offline because the server cannot connect to MongoDB. Configure MONGO_URI and allow the backend host in your MongoDB network access settings.'
+            });
+        }
         if (!isMongoConnected() || !mongoose.connection.db) {
-            return res.status(503).json({ error: 'File storage is temporarily unavailable. Please try again shortly.' });
+            return res.status(503).json({ error: 'File storage is offline because the server cannot connect to MongoDB.' });
         }
 
         let filename = req.get('x-file-name') || 'upload';
@@ -199,8 +221,15 @@ app.post('/api/uploads', (req, res, next) => {
 app.get('/api/uploads/:fileId', async (req, res) => {
     const { fileId } = req.params;
     if (!/^[0-9a-f-]{36}$/i.test(fileId)) return res.status(404).end();
+    try {
+        await connectMongo();
+    } catch {
+        return res.status(503).json({
+            error: 'File storage is offline because the server cannot connect to MongoDB. Configure MONGO_URI and allow the backend host in your MongoDB network access settings.'
+        });
+    }
     if (!isMongoConnected() || !mongoose.connection.db) {
-        return res.status(503).json({ error: 'File storage is temporarily unavailable.' });
+        return res.status(503).json({ error: 'File storage is offline because the server cannot connect to MongoDB.' });
     }
 
     try {
