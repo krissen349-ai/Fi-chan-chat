@@ -26,6 +26,15 @@ test('moving forward with auto-rotation disabled keeps the tank on a straight he
   assert.equal(tank.angle, Math.PI / 2);
 });
 
+test('movement always disables auto-rotation and manual steering, even with conflicting input', () => {
+  const tank = { x: 100, y: 250, angle: Math.PI / 2 };
+  const opponent = { x: 700, y: 250, angle: Math.PI };
+  advanceTank(tank, opponent, { move: 1, turn: 1, autoRotate: true }, 0.05);
+  assert.ok(Math.abs(tank.x - 100) < 1e-9);
+  assert.ok(Math.abs(tank.y - 259.6) < 1e-9);
+  assert.equal(tank.angle, Math.PI / 2);
+});
+
 test('server auto-rotation and manual steering use the same controls as the client', () => {
   const tank = { x: 100, y: 250, angle: 0 };
   const opponent = { x: 700, y: 250, angle: Math.PI };

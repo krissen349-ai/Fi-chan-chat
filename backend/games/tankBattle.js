@@ -63,10 +63,10 @@ function createTankVolley(tank, angle, ownerIndex, firstBulletId) {
 function advanceTank(tank, opponentTank, input, elapsedSeconds) {
   const dt = Math.min(0.1, Math.max(0, elapsedSeconds));
   const move = Math.max(-1, Math.min(1, Number(input.move) || 0));
-  const turn = Math.max(-1, Math.min(1, Number(input.turn) || 0));
-  const rotation = turn
-    ? turn * 1.5
-    : input.autoRotate ? 1 : 0;
+  const turn = move ? 0 : Math.max(-1, Math.min(1, Number(input.turn) || 0));
+  const rotation = move
+    ? 0
+    : turn ? turn * 1.5 : input.autoRotate ? 1 : 0;
 
   tank.angle += rotation * TANK_MAX_ROTATION_SPEED * dt;
   if (!move) return rotation !== 0;

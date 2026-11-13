@@ -196,39 +196,26 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
         const frameScale = deltaTime * 60;
         const moveStep = this.speed * frameScale;
         const rotateStep = this.rotSpeed * frameScale;
+        const direction = pointerState.holdActive
+          ? 1
+          : controls.forward ? 1 : controls.backward ? -1 : 0;
+        const isMoving = direction !== 0;
+        const isTurning = !isMoving && (controls.left || controls.right);
 
         if (
           performance.now() >= rotationPausedUntil &&
           !pointerState.pointerDown &&
           !pointerState.holdActive &&
-          !controls.left &&
-          !controls.right &&
-          !controls.forward &&
-          !controls.backward
+          !isMoving &&
+          !isTurning
         ) {
           this.angle += rotateStep;
         }
 
-        if (pointerState.holdActive) {
-          const nextX = this.x + Math.cos(this.angle) * moveStep;
-          const nextY = this.y + Math.sin(this.angle) * moveStep;
-          let moved = false;
-          if (!this.checkWallCollision(nextX, this.y)) {
-            trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
-            this.x = nextX;
-            moved = true;
-          }
-          if (!this.checkWallCollision(this.x, nextY)) {
-            if (!moved) trackMarks.push({ x: this.x, y: this.y, angle: this.angle, alpha: 0.6, createdAt: Date.now() });
-            this.y = nextY;
-          }
-        }
-
-        if (performance.now() >= rotationPausedUntil && (controls.left || controls.right)) {
+        if (performance.now() >= rotationPausedUntil && isTurning) {
           this.angle += controls.left ? -rotateStep * 1.5 : rotateStep * 1.5;
         }
 
-        const direction = controls.forward ? 1 : controls.backward ? -1 : 0;
         if (direction) {
           const nextX = this.x + Math.cos(this.angle) * moveStep * direction;
           const nextY = this.y + Math.sin(this.angle) * moveStep * direction;
@@ -439,8 +426,11 @@ const GameModal = ({ socket, currentUser, activeChat, onClose, gameSession, onSt
 
       const input = {
         move: pointerState.holdActive ? 1 : controls.forward ? 1 : controls.backward ? -1 : 0,
-        turn: now < rotationPausedUntil ? 0 : controls.left ? -1 : controls.right ? 1 : 0,
-        autoRotate: now >= rotationPausedUntil &&
+        turn: now < rotationPausedUntil || pointerState.holdActive ||
+          controls.forward || controls.backward
+          ? 0
+          : controls.left ? -1 : controls.right ? 1 : 0,
+        autoRotate: performance.now() >= rotationPausedUntil &&
           !pointerState.pointerDown &&
           !controls.forward &&
           !controls.backward &&
