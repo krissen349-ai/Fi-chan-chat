@@ -166,11 +166,33 @@ async function sendPushToUsers(uids, title, body, chatId) {
 let users = {}; 
 let groups = [ { id: "global-group", name: "Global Group", description: "Active Session Stream", createdBy: "System" } ];
 let messages = {}; 
+const groupFileStore = new Map();
+let groupFileStoreBytes = 0;
+const GROUP_FILE_TTL_MS = 12 * 60 * 60 * 1000;
+const MAX_GROUP_FILE_STORE_BYTES = 100 * 1024 * 1024;
+const GROUP_FILE_CHUNK_LIMIT = 700000;
 let activeGames = {}; // 🎮 Game state store karne ke liye
 const pendingGameInvites = new Map();
 const pendingGameInvitesByChat = new Map();
 const activeGamesByChat = new Map();
 const activeGamesByUser = new Map();
+
+const removeGroupFile = (fileId) => {
+    const storedFile = groupFileStore.get(fileId);
+    if (!storedFile) return;
+    groupFileStoreBytes -= storedFile.reservedBytes;
+    groupFileStore.delete(fileId);
+};
+
+const cleanExpiredGroupFiles = () => {
+    const now = Date.now();
+    groupFileStore.forEach((storedFile, fileId) => {
+        if (storedFile.expiresAt <= now) removeGroupFile(fileId);
+    });
+};
+
+const groupFileCleanupTimer = setInterval(cleanExpiredGroupFiles, 10 * 60 * 1000);
+groupFileCleanupTimer.unref?.();
 
 const SUPPORTED_GAME_IDS = new Set([
     'tic-tac-toe',
@@ -874,6 +896,94 @@ io.on('connection', (socket) => {
         socket.join(chatId);
         if (messages[chatId]) {
             socket.emit('messages_updated', { chatId, messages: messages[chatId] });
+        }
+    });
+
+    socket.on('group_file_start', ({ fileId, chatId, chunkCount, size, contentType } = {}, acknowledge) => {
+        const user = users[socket.id];
+        cleanExpiredGroupFiles();
+        if (!user?.uid || typeof chatId !== 'string' || !chatId || chatId.includes('--')
+            || chatId.length > 200 || !socket.rooms.has(chatId)) {
+            return acknowledge?.({ ok: false, error: 'Join the group chat before sharing a file.' });
+        }
+        if (!/^[0-9a-f-]{36}$/i.test(fileId)
+            || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 30
+            || !Number.isInteger(size) || size < 1 || size > 15 * 1024 * 1024
+            || chunkCount !== Math.ceil(size / 525000)
+            || typeof contentType !== 'string' || contentType.length > 120) {
+            return acknowledge?.({ ok: false, error: 'This file is invalid or exceeds the 15 MB limit.' });
+        }
+        if (groupFileStore.has(fileId)) {
+            return acknowledge?.({ ok: false, error: 'This file transfer ID is already in use.' });
+        }
+        const reservedBytes = Math.ceil(size * 4 / 3);
+        if (groupFileStoreBytes + reservedBytes > MAX_GROUP_FILE_STORE_BYTES) {
+            return acknowledge?.({ ok: false, error: 'Group file sharing is temporarily full. Try again later.' });
+        }
+
+        groupFileStore.set(fileId, {
+            chatId,
+            ownerUid: user.uid,
+            chunkCount,
+            size,
+            reservedBytes,
+            contentType,
+            chunks: Array(chunkCount),
+            complete: false,
+            expiresAt: Date.now() + GROUP_FILE_TTL_MS
+        });
+        groupFileStoreBytes += reservedBytes;
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('group_file_chunk', ({ fileId, chunkIndex, data } = {}, acknowledge) => {
+        const storedFile = groupFileStore.get(fileId);
+        const user = users[socket.id];
+        if (!storedFile || storedFile.ownerUid !== user?.uid || storedFile.complete
+            || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= storedFile.chunkCount
+            || typeof data !== 'string' || data.length > GROUP_FILE_CHUNK_LIMIT
+            || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+            return acknowledge?.({ ok: false, error: 'This file chunk is not valid.' });
+        }
+
+        storedFile.chunks[chunkIndex] = data;
+        storedFile.expiresAt = Date.now() + GROUP_FILE_TTL_MS;
+        socket.to(storedFile.chatId).emit('group_file_chunk', {
+            fileId,
+            chunkIndex,
+            chunkCount: storedFile.chunkCount,
+            data
+        });
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('group_file_finish', ({ fileId } = {}, acknowledge) => {
+        const storedFile = groupFileStore.get(fileId);
+        if (!storedFile || storedFile.ownerUid !== users[socket.id]?.uid
+            || storedFile.chunks.some(chunk => typeof chunk !== 'string')) {
+            return acknowledge?.({ ok: false, error: 'The file did not finish uploading. Please retry.' });
+        }
+        storedFile.complete = true;
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('group_file_download', ({ fileId } = {}) => {
+        const storedFile = groupFileStore.get(fileId);
+        if (!storedFile?.complete || !socket.rooms.has(storedFile.chatId)) return;
+        storedFile.chunks.forEach((data, chunkIndex) => {
+            socket.emit('group_file_chunk', {
+                fileId,
+                chunkIndex,
+                chunkCount: storedFile.chunkCount,
+                data
+            });
+        });
+    });
+
+    socket.on('group_file_cancel', ({ fileId } = {}) => {
+        const storedFile = groupFileStore.get(fileId);
+        if (storedFile?.ownerUid === users[socket.id]?.uid && !storedFile.complete) {
+            removeGroupFile(fileId);
         }
     });
 

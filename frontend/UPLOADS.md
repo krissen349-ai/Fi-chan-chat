@@ -1,13 +1,5 @@
 # File and Profile Photo Uploads
 
-Chat attachments (up to 15 MB) and profile photos (up to 10 MB) are converted to Base64 text and split into small Firestore documents so each stays below Firestore's document-size limit. The chat continues sharing a short file ID through the existing private-chat Firestore or group-chat Socket.IO flow. Profile edit/signup saves the same file ID in Firebase Auth and the user's Firestore profile.
+Private-chat attachments (up to 15 MB) are divided into small text chunks and saved in the existing private-chat messages collection. Group-chat files are relayed through Socket.IO and retained in server memory for up to 12 hours. Profile photos (up to 10 MB) are compressed to fit Firestore's document limit and saved in the existing user profile document.
 
-## Firebase setup
-
-Deploy the updated Firestore rules from the repository root:
-
-```sh
-firebase deploy --only firestore:rules
-```
-
-Only signed-in users can create files; file contents can be fetched by signed-in users who receive the file ID in a chat or profile. Firestore reads/writes are higher than a single URL upload because large files are divided into multiple text chunks.
+Uploads use the existing private-chat and profile Firestore rules; no new rules deployment, Cloudinary, Firebase Storage, or MongoDB file service is required.

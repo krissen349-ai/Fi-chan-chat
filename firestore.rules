@@ -23,44 +23,5 @@ service cloud.firestore {
         && chatId.matches('(^|.*--)' + request.auth.uid + '(--.*|$)');
     }
 
-    match /uploads/{uploadId} {
-      allow get: if signedIn();
-      allow list: if false;
-      allow create: if signedIn()
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.status == 'uploading'
-        && request.resource.data.size is int
-        && request.resource.data.size > 0
-        && request.resource.data.chunkCount is int
-        && request.resource.data.chunkCount > 0
-        && request.resource.data.chunkCount <= 32
-        && ((request.resource.data.kind == 'chat'
-            && request.resource.data.size <= 15 * 1024 * 1024
-            && request.resource.data.chunkCount <= 30)
-          || (request.resource.data.kind == 'profile'
-            && request.resource.data.size <= 10 * 1024 * 1024
-            && request.resource.data.chunkCount <= 20
-            && request.resource.data.contentType.matches('image/(jpeg|png|gif|webp|avif|bmp)')));
-      allow update: if signedIn()
-        && resource.data.ownerUid == request.auth.uid
-        && resource.data.status == 'uploading'
-        && request.resource.data.status == 'ready'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
-      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
-
-      match /chunks/{chunkId} {
-        allow get: if signedIn();
-        allow list: if false;
-        allow create: if signedIn()
-          && request.resource.data.ownerUid == request.auth.uid
-          && request.resource.data.keys().hasOnly(['ownerUid', 'data'])
-          && request.resource.data.data is string
-          && request.resource.data.data.size() <= 700000
-          && get(/databases/$(database)/documents/uploads/$(uploadId)).data.ownerUid == request.auth.uid
-          && get(/databases/$(database)/documents/uploads/$(uploadId)).data.status == 'uploading';
-        allow delete: if signedIn()
-          && get(/databases/$(database)/documents/uploads/$(uploadId)).data.ownerUid == request.auth.uid;
-      }
-    }
   }
 }

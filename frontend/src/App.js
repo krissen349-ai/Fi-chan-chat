@@ -29,7 +29,6 @@ import {
   doc,     
   setDoc,
   getDoc,
-  updateDoc,
   writeBatch
 } from 'firebase/firestore';
 
@@ -89,9 +88,66 @@ const socket = io(getSocketBaseUrl(), {
 });
 
 const FIRESTORE_UPLOAD_PREFIX = 'fi-upload:';
+const GROUP_UPLOAD_PREFIX = 'fi-group-file:';
 const UPLOAD_CHUNK_BYTES = 525000;
 const UPLOAD_CHUNKS_PER_BATCH = 10;
+const PROFILE_PHOTO_MAX_BYTES = 500000;
 const uploadedFileUrlCache = new Map();
+const groupFileChunkCache = new Map();
+const groupFileChunkWaiters = new Map();
+
+const cacheGroupFileChunk = ({ fileId, chunkIndex, chunkCount, data }) => {
+  if (typeof fileId !== 'string' || !Number.isInteger(chunkIndex)
+    || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 30
+    || chunkIndex < 0 || chunkIndex >= chunkCount || typeof data !== 'string' || data.length > 700000) return;
+
+  let cached = groupFileChunkCache.get(fileId);
+  if (!cached || cached.chunkCount !== chunkCount) {
+    cached = { chunkCount, chunks: Array(chunkCount) };
+    groupFileChunkCache.set(fileId, cached);
+  }
+  cached.chunks[chunkIndex] = data;
+  const waiter = groupFileChunkWaiters.get(fileId);
+  if (waiter && cached.chunks.every(Boolean)) {
+    groupFileChunkWaiters.delete(fileId);
+    waiter.resolve(cached.chunks);
+  }
+};
+
+socket.on('group_file_chunk', cacheGroupFileChunk);
+
+const emitSocketAcknowledgement = (eventName, data) => new Promise((resolve, reject) => {
+  socket.timeout(15000).emit(eventName, data, (timeoutError, response) => {
+    if (timeoutError) {
+      reject(new Error('File transfer timed out. Check your connection and try again.'));
+    } else if (!response?.ok) {
+      reject(new Error(response?.error || 'The file could not be transferred.'));
+    } else {
+      resolve(response);
+    }
+  });
+});
+
+const getGroupFileChunks = (fileId, chunkCount) => {
+  const cached = groupFileChunkCache.get(fileId);
+  if (cached?.chunkCount === chunkCount && cached.chunks.every(Boolean)) {
+    return Promise.resolve(cached.chunks);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      groupFileChunkWaiters.delete(fileId);
+      reject(new Error('This group file is no longer available. Ask the sender to share it again.'));
+    }, 15000);
+    groupFileChunkWaiters.set(fileId, {
+      resolve: chunks => {
+        window.clearTimeout(timer);
+        resolve(chunks);
+      }
+    });
+    socket.emit('group_file_download', { fileId });
+  });
+};
 
 const sanitizeUploadFileName = (fileName) => Array.from(fileName || 'upload', character => {
   const codePoint = character.codePointAt(0);
@@ -102,7 +158,7 @@ const sanitizeUploadFileName = (fileName) => Array.from(fileName || 'upload', ch
 
 const getUploadErrorMessage = (error) => {
   if (error?.code === 'permission-denied') {
-    return 'Firestore is blocking file uploads. Deploy the updated firestore.rules file, then try again.';
+    return 'You do not have permission to upload files in this chat. Make sure you are signed in with a chat participant account.';
   }
   if (error?.code === 'not-found') {
     return 'Firestore could not find this database or document. Confirm Cloud Firestore is enabled for the app project and reload the site.';
@@ -114,59 +170,96 @@ const getUploadErrorMessage = (error) => {
 };
 
 const getUploadedFileObjectUrl = async (fileUrl) => {
+  if (fileUrl.startsWith(GROUP_UPLOAD_PREFIX)) {
+    const [, fileId, count, encodedContentType] = fileUrl.split(':');
+    const chunkCount = Number(count);
+    if (!/^[0-9a-f-]{36}$/i.test(fileId) || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 30) {
+      throw new Error('This group file link is invalid.');
+    }
+    if (uploadedFileUrlCache.has(fileUrl)) return uploadedFileUrlCache.get(fileUrl);
+    const chunks = await getGroupFileChunks(fileId, chunkCount);
+    const bytes = decodeBase64Chunks(chunks);
+    const contentType = decodeURIComponent(encodedContentType || 'application/octet-stream');
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+    uploadedFileUrlCache.set(fileUrl, objectUrl);
+    return objectUrl;
+  }
+
   const fileId = fileUrl.slice(FIRESTORE_UPLOAD_PREFIX.length);
-  if (!/^[0-9a-f-]{36}$/i.test(fileId)) throw new Error('This shared file link is invalid.');
-  if (uploadedFileUrlCache.has(fileId)) return uploadedFileUrlCache.get(fileId);
-
-  const downloadPromise = (async () => {
-    const metadataSnapshot = await getDoc(doc(db, 'uploads', fileId));
-    if (!metadataSnapshot.exists() || metadataSnapshot.data().status !== 'ready') {
-      throw new Error('This file is not available yet. Ask the sender to upload it again.');
+  const [chatId, uploadId, count] = fileId.split(':');
+  if (uploadId && chatId && count) {
+    const chunkCount = Number(count);
+    if (!/^[0-9a-f-]{36}$/i.test(uploadId) || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 30) {
+      throw new Error('This shared file link is invalid.');
     }
+    const cacheKey = `${chatId}:${uploadId}`;
+    if (uploadedFileUrlCache.has(cacheKey)) return uploadedFileUrlCache.get(cacheKey);
 
-    const metadata = metadataSnapshot.data();
-    const maxFileSize = metadata.kind === 'profile' ? 10 * 1024 * 1024
-      : metadata.kind === 'chat' ? 15 * 1024 * 1024 : 0;
-    if (!Number.isInteger(metadata.size) || metadata.size < 1 || metadata.size > maxFileSize
-      || !Number.isInteger(metadata.chunkCount)
-      || metadata.chunkCount !== Math.ceil(metadata.size / UPLOAD_CHUNK_BYTES)) {
-      throw new Error('This file has invalid upload information. Ask the sender to upload it again.');
-    }
-    const chunkSnapshots = await Promise.all(
-      Array.from({ length: metadata.chunkCount }, (_, index) =>
-        getDoc(doc(db, 'uploads', fileId, 'chunks', String(index)))
-      )
+    const snapshots = await Promise.all(
+      Array.from({ length: chunkCount }, (_, index) => getDoc(doc(
+        db, 'private_chats', chatId, 'messages', `fi-file-${uploadId}-${index}`
+      )))
     );
-    if (chunkSnapshots.some(snapshot => !snapshot.exists())) {
+    if (snapshots.some(snapshot => !snapshot.exists())) {
       throw new Error('This file is incomplete. Ask the sender to upload it again.');
     }
-
-    const bytes = new Uint8Array(metadata.size);
-    let byteOffset = 0;
-    for (const snapshot of chunkSnapshots) {
-      const binary = atob(snapshot.data().data);
-      for (let offset = 0; offset < binary.length; offset += 1) {
-        if (byteOffset >= bytes.length) throw new Error('This file has invalid upload data.');
-        bytes[byteOffset] = binary.charCodeAt(offset);
-        byteOffset += 1;
-      }
-    }
-    if (byteOffset !== metadata.size) throw new Error('This file is incomplete. Ask the sender to upload it again.');
-    return URL.createObjectURL(new Blob([bytes], { type: metadata.contentType || 'application/octet-stream' }));
-  })();
-
-  uploadedFileUrlCache.set(fileId, downloadPromise);
-  try {
-    const objectUrl = await downloadPromise;
-    uploadedFileUrlCache.set(fileId, objectUrl);
+    const firstChunk = snapshots[0].data();
+    const chunks = snapshots.map(snapshot => snapshot.data().data);
+    const bytes = decodeBase64Chunks(chunks);
+    if (bytes.length !== firstChunk.fileSize) throw new Error('This file is incomplete. Ask the sender to upload it again.');
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: firstChunk.contentType || 'application/octet-stream' }));
+    uploadedFileUrlCache.set(cacheKey, objectUrl);
     return objectUrl;
-  } catch (error) {
-    uploadedFileUrlCache.delete(fileId);
-    throw error;
+  }
+
+  throw new Error('This shared file link is invalid.');
+};
+
+const decodeBase64Chunks = (chunks) => {
+  const binaryChunks = chunks.map(chunk => atob(chunk));
+  const totalLength = binaryChunks.reduce((total, chunk) => total + chunk.length, 0);
+  const bytes = new Uint8Array(totalLength);
+  let byteOffset = 0;
+  binaryChunks.forEach(binary => {
+    for (let offset = 0; offset < binary.length; offset += 1) {
+      bytes[byteOffset] = binary.charCodeAt(offset);
+      byteOffset += 1;
+    }
+  });
+  return bytes;
+};
+
+const compressProfilePhoto = async (file) => {
+  const image = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1200 / Math.max(image.width, image.height));
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not prepare this profile photo.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const toJpegBlob = quality => new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+    let quality = 0.82;
+    let blob = await toJpegBlob(quality);
+    while (blob && blob.size > PROFILE_PHOTO_MAX_BYTES && quality > 0.5) {
+      quality -= 0.1;
+      blob = await toJpegBlob(quality);
+    }
+    if (!blob || blob.size > PROFILE_PHOTO_MAX_BYTES) throw new Error('Could not compress this photo enough. Please choose a smaller image.');
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('Could not read the compressed profile photo.'));
+      reader.readAsDataURL(blob);
+    });
+  } finally {
+    image.close();
   }
 };
 
-const uploadFile = async (file, kind) => {
+const uploadFile = async (file, kind, chatId = null) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in before uploading files.');
   if (!['chat', 'profile'].includes(kind)) throw new Error('Invalid upload type.');
@@ -176,63 +269,79 @@ const uploadFile = async (file, kind) => {
     throw new Error(kind === 'profile' ? 'Profile photos must be 10 MB or smaller.' : 'Chat files must be 15 MB or smaller.');
   }
 
+  if (kind === 'profile') {
+    const photoDataUrl = await compressProfilePhoto(file);
+    await setDoc(doc(db, 'users', user.uid), { pfp: photoDataUrl }, { merge: true });
+    return photoDataUrl;
+  }
+
+  if (kind === 'chat' && (typeof chatId !== 'string' || !chatId)) {
+    throw new Error('Select a chat before attaching a file.');
+  }
   const fileId = crypto.randomUUID();
   const chunkCount = Math.ceil(file.size / UPLOAD_CHUNK_BYTES);
-  const uploadRef = doc(db, 'uploads', fileId);
   const safeName = sanitizeUploadFileName(file.name);
-  const metadata = {
-    ownerUid: user.uid,
-    fileName: safeName || 'upload',
-    contentType: file.type || 'application/octet-stream',
-    size: file.size,
-    kind,
-    chunkCount,
-    status: 'uploading',
-    createdAt: Date.now()
-  };
-
-  await setDoc(uploadRef, metadata);
-  try {
-    for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
-      const batch = writeBatch(db);
-      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
-      for (let index = batchStart; index < batchEnd; index += 1) {
+  if (!chatId.includes('--')) {
+    await emitSocketAcknowledgement('group_file_start', {
+      fileId,
+      chatId,
+      chunkCount,
+      size: file.size,
+      contentType: file.type || 'application/octet-stream'
+    });
+    try {
+      for (let index = 0; index < chunkCount; index += 1) {
         const byteStart = index * UPLOAD_CHUNK_BYTES;
         const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
         let binaryChunk = '';
         for (let offset = 0; offset < fileChunk.length; offset += 32768) {
           binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
         }
-        batch.set(doc(db, 'uploads', fileId, 'chunks', String(index)), {
-          ownerUid: user.uid,
-          data: btoa(binaryChunk)
-        });
+        const data = btoa(binaryChunk);
+        cacheGroupFileChunk({ fileId, chunkIndex: index, chunkCount, data });
+        await emitSocketAcknowledgement('group_file_chunk', { fileId, chunkIndex: index, data });
       }
-      await batch.commit();
+      await emitSocketAcknowledgement('group_file_finish', { fileId });
+    } catch (error) {
+      socket.emit('group_file_cancel', { fileId });
+      throw error;
     }
-    await updateDoc(uploadRef, { status: 'ready' });
-  } catch (error) {
-    const cleanupBatches = [];
-    for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
-      const batch = writeBatch(db);
-      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
-      for (let index = batchStart; index < batchEnd; index += 1) {
-        batch.delete(doc(db, 'uploads', fileId, 'chunks', String(index)));
-      }
-      cleanupBatches.push(batch.commit());
-    }
-    const cleanupResults = await Promise.allSettled(cleanupBatches);
-    cleanupResults.filter(result => result.status === 'rejected')
-      .forEach(result => console.error('Could not clean up incomplete file upload:', result.reason));
-    try {
-      await deleteDoc(uploadRef);
-    } catch (cleanupError) {
-      console.error('Could not remove incomplete file metadata:', cleanupError);
-    }
-    throw error;
+    return `${GROUP_UPLOAD_PREFIX}${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
   }
 
-  return `${FIRESTORE_UPLOAD_PREFIX}${fileId}`;
+  const messagesRef = collection(db, 'private_chats', chatId, 'messages');
+  const ownerUid = user.uid;
+  const metadata = {
+    fileName: safeName || 'upload',
+    contentType: file.type || 'application/octet-stream',
+    size: file.size,
+    chunkCount,
+    timestampRaw: Date.now(),
+    _fiUploadChunk: true,
+    fileId,
+    ownerUid
+  };
+
+  for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
+    const batch = writeBatch(db);
+    const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
+    for (let index = batchStart; index < batchEnd; index += 1) {
+      const byteStart = index * UPLOAD_CHUNK_BYTES;
+      const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
+      let binaryChunk = '';
+      for (let offset = 0; offset < fileChunk.length; offset += 32768) {
+        binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
+      }
+      batch.set(doc(messagesRef, `fi-file-${fileId}-${index}`), {
+        ...metadata,
+        chunkIndex: index,
+        data: btoa(binaryChunk)
+      });
+    }
+    await batch.commit();
+  }
+
+  return `${FIRESTORE_UPLOAD_PREFIX}${chatId}:${fileId}:${chunkCount}`;
 };
 
 const ensureHostedImage = async (image) => {
@@ -257,7 +366,7 @@ function UploadedMedia({ mediaUrl, as: Element = 'img', ...props }) {
       return () => { active = false; };
     }
 
-    const resolveUrl = mediaUrl.startsWith(FIRESTORE_UPLOAD_PREFIX)
+    const resolveUrl = mediaUrl.startsWith(FIRESTORE_UPLOAD_PREFIX) || mediaUrl.startsWith(GROUP_UPLOAD_PREFIX)
       ? getUploadedFileObjectUrl(mediaUrl)
       : Promise.resolve(mediaUrl);
     resolveUrl.then(url => {
@@ -862,7 +971,9 @@ function App() {
       );
 
       const unsubscribe = onSnapshot(q, (snapshot) => {
-        const fetchedMsgs = snapshot.docs.map(doc => doc.data());
+        const fetchedMsgs = snapshot.docs
+          .map(messageDoc => messageDoc.data())
+          .filter(message => !message._fiUploadChunk);
         setMessages(prev => {
           const currentList = prev[activeChat.id] || [];
           const msgMap = new Map();
@@ -1281,7 +1392,7 @@ function App() {
     const isGlobal = chat.id === 'global-group' || chat.id === 'global' || chat.name === 'Global Group';
     for (const file of files) {
       try {
-        const uploadedUrl = await uploadFile(file, 'chat');
+        const uploadedUrl = await uploadFile(file, 'chat', chat.id);
         const fileType = file.type.startsWith('image/') ? 'image'
           : file.type.startsWith('video/') ? 'video'
             : file.type.startsWith('audio/') ? 'audio' : 'file';
@@ -1437,7 +1548,9 @@ function App() {
         : await ensureHostedImage(editPfp || currentUser.pfp);
 
       const authProfile = { displayName: editUsername.trim() };
-      if (!finalPfp.startsWith(FIRESTORE_UPLOAD_PREFIX)) authProfile.photoURL = finalPfp;
+      if (!finalPfp.startsWith(FIRESTORE_UPLOAD_PREFIX) && !finalPfp.startsWith('data:image/')) {
+        authProfile.photoURL = finalPfp;
+      }
       await updateProfile(user, authProfile);
       await setDoc(doc(db, "users", user.uid), {
         uid: user.uid,
@@ -1517,7 +1630,9 @@ function App() {
           : await ensureHostedImage(customPfp || fallbackAvatar);
 
         const authProfile = { displayName: username.trim() };
-        if (!photoToSave.startsWith(FIRESTORE_UPLOAD_PREFIX)) authProfile.photoURL = photoToSave;
+        if (!photoToSave.startsWith(FIRESTORE_UPLOAD_PREFIX) && !photoToSave.startsWith('data:image/')) {
+          authProfile.photoURL = photoToSave;
+        }
         await updateProfile(user, authProfile);
 
         const userBio = editBio.trim() || "Hey there! I am using Fi-chan Chat.";
