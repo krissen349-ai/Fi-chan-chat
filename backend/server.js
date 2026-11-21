@@ -76,18 +76,38 @@ const connectMongo = () => {
 connectMongo().catch(() => {});
 
 let firebaseAdminReady = false;
-if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+const firebaseProjectId = process.env.FIREBASE_PROJECT_ID
+    || process.env.GOOGLE_CLOUD_PROJECT
+    || process.env.GCLOUD_PROJECT;
+const hasApplicationDefaultCredentials = Boolean(
+    process.env.GOOGLE_APPLICATION_CREDENTIALS
+    || process.env.GOOGLE_CLOUD_PROJECT
+    || process.env.GCLOUD_PROJECT
+);
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || hasApplicationDefaultCredentials) {
     try {
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-        serviceAccount.private_key = serviceAccount.private_key?.replace(/\\n/g, '\n');
-        admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+        const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+        const options = serviceAccountJson
+            ? (() => {
+                const serviceAccount = JSON.parse(serviceAccountJson);
+                serviceAccount.private_key = serviceAccount.private_key?.replace(/\\n/g, '\n');
+                return {
+                    credential: admin.credential.cert(serviceAccount),
+                    projectId: firebaseProjectId || serviceAccount.project_id
+                };
+            })()
+            : {
+                credential: admin.credential.applicationDefault(),
+                projectId: firebaseProjectId
+            };
+        if (!admin.apps.length) admin.initializeApp(options);
         firebaseAdminReady = true;
-        console.log('Firebase Admin push notifications enabled.');
+        console.log('Firebase Admin authentication and push notifications enabled.');
     } catch (error) {
         console.error('Firebase Admin initialization failed:', error.message);
     }
 } else {
-    console.warn('Firebase Admin push disabled: FIREBASE_SERVICE_ACCOUNT_JSON is not configured.');
+    console.warn('Firebase Admin unavailable: configure FIREBASE_SERVICE_ACCOUNT_JSON or application-default credentials.');
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -476,8 +496,16 @@ io.on('connection', (socket) => {
 
     socket.on('register_push_token', async ({ token } = {}, acknowledge) => {
         const uid = users[socket.id]?.verifiedUid;
-        if (!uid || typeof token !== 'string' || token.length < 20 || token.length > 4096) {
-            acknowledge?.({ ok: false, error: 'Sign in again or configure Firebase Admin to register this device.' });
+        if (!firebaseAdminReady) {
+            acknowledge?.({ ok: false, error: 'Device registration is unavailable because Firebase Admin credentials are not configured on the chat server.' });
+            return;
+        }
+        if (!uid) {
+            acknowledge?.({ ok: false, error: 'Your Firebase sign-in could not be verified. Sign in again and retry.' });
+            return;
+        }
+        if (typeof token !== 'string' || token.length < 20 || token.length > 4096) {
+            acknowledge?.({ ok: false, error: 'The browser returned an invalid notification token. Re-enable notifications and retry.' });
             return;
         }
 

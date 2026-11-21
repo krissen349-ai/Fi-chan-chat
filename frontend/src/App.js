@@ -158,7 +158,10 @@ const sanitizeUploadFileName = (fileName) => Array.from(fileName || 'upload', ch
 
 const getUploadErrorMessage = (error) => {
   if (error?.code === 'permission-denied') {
-    return 'You do not have permission to upload files in this chat. Make sure you are signed in with a chat participant account.';
+    return 'Firebase denied this upload. Sign in again and confirm you own this profile or are a participant in the private chat.';
+  }
+  if (error?.code === 'unauthenticated' || error?.code === 'auth/user-token-expired') {
+    return 'Your sign-in has expired. Sign in again and retry the upload.';
   }
   if (error?.code === 'not-found') {
     return 'Firestore could not find this database or document. Confirm Cloud Firestore is enabled for the app project and reload the site.';
@@ -206,7 +209,7 @@ const getUploadedFileObjectUrl = async (fileUrl) => {
     const firstChunk = snapshots[0].data();
     const chunks = snapshots.map(snapshot => snapshot.data().data);
     const bytes = decodeBase64Chunks(chunks);
-    if (bytes.length !== firstChunk.fileSize) throw new Error('This file is incomplete. Ask the sender to upload it again.');
+    if (bytes.length !== firstChunk.size) throw new Error('This file is incomplete. Ask the sender to upload it again.');
     const objectUrl = URL.createObjectURL(new Blob([bytes], { type: firstChunk.contentType || 'application/octet-stream' }));
     uploadedFileUrlCache.set(cacheKey, objectUrl);
     return objectUrl;
@@ -270,6 +273,9 @@ const uploadFile = async (file, kind, chatId = null) => {
   }
 
   if (kind === 'profile') {
+    if (file.type && !file.type.startsWith('image/')) {
+      throw new Error('Profile photos must be image files.');
+    }
     const photoDataUrl = await compressProfilePhoto(file);
     await setDoc(doc(db, 'users', user.uid), { pfp: photoDataUrl }, { merge: true });
     return photoDataUrl;
@@ -742,11 +748,23 @@ function App() {
       socketUserReadyRef.current = false;
       firebaseUser.getIdToken().then(idToken => {
         socket.timeout(5000).emit('login_user', { ...currentUserRef.current, idToken }, (error, result) => {
-          if (error || !result?.ok) return;
+          if (error || !result?.ok) {
+            socketUserReadyRef.current = false;
+            setNotificationStatus(result?.error || 'Could not verify your sign-in with the notification server.');
+            return;
+          }
+          if (!result.verified) {
+            socketUserReadyRef.current = false;
+            setNotificationStatus('Device registration requires valid Firebase Admin credentials on the chat server.');
+            return;
+          }
           socketUserReadyRef.current = true;
           if (pushTokenRef.current) registerPushToken(pushTokenRef.current);
         });
-      }).catch(error => console.error('Socket authentication failed:', error));
+      }).catch(error => {
+        console.error('Socket authentication failed:', error);
+        setNotificationStatus('Could not refresh your sign-in. Please sign in again.');
+      });
     };
     const handleSocketDisconnect = () => { socketUserReadyRef.current = false; };
 

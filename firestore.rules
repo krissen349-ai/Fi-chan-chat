@@ -5,6 +5,41 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isPrivateChatParticipant(chatId) {
+      let participants = chatId.split('--');
+      return signedIn()
+        && participants.size() == 2
+        && request.auth.uid in participants;
+    }
+
+    function isValidPrivateFileChunk(chatId, messageId) {
+      let data = request.resource.data;
+      return isPrivateChatParticipant(chatId)
+        && data._fiUploadChunk == true
+        && data.ownerUid == request.auth.uid
+        && data.fileId is string
+        && data.fileId.matches('^[0-9a-fA-F-]{36}$')
+        && data.chunkIndex is int
+        && data.chunkCount is int
+        && data.chunkCount >= 1
+        && data.chunkCount <= 30
+        && data.chunkIndex >= 0
+        && data.chunkIndex < data.chunkCount
+        && messageId == 'fi-file-' + data.fileId + '-' + string(data.chunkIndex)
+        && data.size is int
+        && data.size > 0
+        && data.size <= 15 * 1024 * 1024
+        && data.fileName is string
+        && data.fileName.size() <= 180
+        && data.contentType is string
+        && data.contentType.size() <= 120
+        && data.contentType.matches('^(image|video|audio|application|text)/[A-Za-z0-9.+-]+$')
+        && data.data is string
+        && data.data.size() > 0
+        && data.data.size() <= 700000
+        && data.data.matches('^[A-Za-z0-9+/]*={0,2}$');
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update, delete: if signedIn() && request.auth.uid == userId;
@@ -19,8 +54,14 @@ service cloud.firestore {
     }
 
     match /private_chats/{chatId}/messages/{messageId} {
-      allow read, create, update, delete: if signedIn()
-        && chatId.matches('(^|.*--)' + request.auth.uid + '(--.*|$)');
+      allow read: if isPrivateChatParticipant(chatId);
+      allow create: if isPrivateChatParticipant(chatId)
+        && (!request.resource.data.keys().hasAny(['_fiUploadChunk'])
+          || isValidPrivateFileChunk(chatId, messageId));
+      allow update, delete: if isPrivateChatParticipant(chatId)
+        && (!resource.data.keys().hasAny(['_fiUploadChunk'])
+          || resource.data._fiUploadChunk != true
+          || resource.data.ownerUid == request.auth.uid);
     }
 
   }
