@@ -13,6 +13,7 @@ const { applicationDefault, cert, getApps, initializeApp } = require('firebase-a
 const { getAuth } = require('firebase-admin/auth');
 const { getMessaging } = require('firebase-admin/messaging');
 const { randomUUID } = require('crypto');
+const { registerPrivateChatSocketHandlers } = require('./privateChatSocketHandlers');
 const {
     GLASS_BRIDGE,
     RED_LIGHT_GREEN_LIGHT,
@@ -475,6 +476,7 @@ setInterval(() => {
 // 🔌 Socket.IO Event Handlers
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
+    registerPrivateChatSocketHandlers({ socket, users, messages, getPrivateChatParticipants });
 
     if (isMongoConnected()) {
         Gift.find()
@@ -1295,22 +1297,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('typing', (data = {}) => {
-        if (typeof data.chatId !== 'string' || !data.chatId) return;
-        if (data.chatId.includes('--')) {
-            const user = users[socket.id];
-            const participants = getPrivateChatParticipants(data.chatId);
-            if (!user?.verifiedUid || !participants?.includes(user.verifiedUid)) return;
-            const typingUpdate = {
-                chatId: data.chatId,
-                username: user.username || 'User',
-                isTyping: Boolean(data.isTyping)
-            };
-            participants
-                .filter(uid => uid !== user.verifiedUid)
-                .forEach(uid => io.to(uid).emit('user_typing', typingUpdate));
-            return;
+    socket.on('typing', (data = {}, acknowledge) => {
+        if (typeof data.chatId !== 'string' || !data.chatId) {
+            return acknowledge?.({ ok: false, error: 'This chat is invalid.' });
         }
+        if (data.chatId.includes('--')) return;
 
         socket.to(data.chatId).emit('user_typing', {
             chatId: data.chatId,
@@ -1332,24 +1323,11 @@ io.on('connection', (socket) => {
         io.emit('update_groups', groups);
     });
 
-    socket.on('messageSeen', ({ chatId, messageId, userId } = {}) => {
-        if (typeof chatId === 'string' && chatId.includes('--')) {
-            const user = users[socket.id];
-            const participants = getPrivateChatParticipants(chatId);
-            if (!user?.verifiedUid || !participants?.includes(user.verifiedUid)) return;
-
-            const trustedUserId = user.verifiedUid;
-            const targetMsg = messages[chatId]?.find(message => message.id === messageId);
-            if (targetMsg) {
-                const seenBy = Array.isArray(targetMsg.seenBy) ? targetMsg.seenBy : [];
-                if (!seenBy.includes(trustedUserId)) targetMsg.seenBy = [...seenBy, trustedUserId];
-            }
-            const seenUpdate = { chatId, messageId, userId: trustedUserId };
-            participants
-                .filter(uid => uid !== trustedUserId)
-                .forEach(uid => io.to(uid).emit('userSeenUpdate', seenUpdate));
-            return;
+    socket.on('messageSeen', ({ chatId, messageId, userId } = {}, acknowledge) => {
+        if (typeof chatId !== 'string' || !chatId) {
+            return acknowledge?.({ ok: false, error: 'This chat is invalid.' });
         }
+        if (chatId.includes('--')) return;
 
         if (messages[chatId]) {
             const targetMsg = messages[chatId].find(m => m.id === messageId);

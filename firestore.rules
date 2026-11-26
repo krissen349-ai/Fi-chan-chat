@@ -72,20 +72,6 @@ service cloud.firestore {
         );
     }
 
-    function isValidSeenUpdate() {
-      let previousSeenBy = resource.data.get('seenBy', []);
-      let nextSeenBy = request.resource.data.get('seenBy', []);
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy'])
-        && previousSeenBy is list
-        && nextSeenBy is list
-        && resource.data.keys().hasAny(['senderId'])
-        && resource.data.senderId != request.auth.uid
-        && !(request.auth.uid in previousSeenBy)
-        && request.auth.uid in nextSeenBy
-        && nextSeenBy.hasAll(previousSeenBy)
-        && nextSeenBy.size() == previousSeenBy.size() + 1;
-    }
-
     match /users/{userId} {
       allow get: if isOwner(userId)
         || (signedIn() && resource.data.keys()
@@ -134,14 +120,9 @@ service cloud.firestore {
         );
 
       allow update: if isPrivateChatParticipant(chatId)
-        && (
-          isValidSeenUpdate()
-          || (
-            !isPrivateFileChunk(messageId, resource.data)
-            && !isPrivateFileChunk(messageId, request.resource.data)
-            && resource.data.senderId == request.auth.uid
-          )
-        );
+        && !isPrivateFileChunk(messageId, resource.data)
+        && !isPrivateFileChunk(messageId, request.resource.data)
+        && resource.data.senderId == request.auth.uid;
 
       allow delete: if isPrivateChatParticipant(chatId)
         && (
@@ -155,18 +136,5 @@ service cloud.firestore {
         );
     }
 
-    match /private_chats/{chatId}/typing/{userId} {
-      allow read: if isPrivateChatParticipant(chatId);
-
-      allow create, update: if isPrivateChatParticipant(chatId)
-        && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['uid', 'isTyping', 'updatedAt'])
-        && request.resource.data.uid == userId
-        && request.resource.data.isTyping is bool
-        && request.resource.data.updatedAt is timestamp;
-
-      allow delete: if isPrivateChatParticipant(chatId)
-        && request.auth.uid == userId;
-    }
   }
 }

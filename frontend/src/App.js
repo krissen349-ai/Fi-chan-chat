@@ -22,7 +22,6 @@ import {
 import { 
   collection, 
   addDoc, 
-  arrayUnion,
   query, 
   orderBy, 
   onSnapshot, 
@@ -32,9 +31,7 @@ import {
   doc,     
   setDoc,
   getDoc,
-  updateDoc,
   writeBatch,
-  serverTimestamp
 } from 'firebase/firestore';
 
 const LineIcon = ({ name, size = 19 }) => {
@@ -164,6 +161,18 @@ const ensurePrivateChatJoined = chatId => new Promise((resolve, reject) => {
       reject(new Error('Could not connect to this private chat. Reconnect and try again.'));
     } else if (!response?.ok) {
       reject(new Error(response?.error || 'Could not join this private chat.'));
+    } else {
+      resolve(response);
+    }
+  });
+});
+
+const emitPrivateChatAcknowledgement = (eventName, data) => new Promise((resolve, reject) => {
+  socket.timeout(5000).emit(eventName, data, (timeoutError, response) => {
+    if (timeoutError) {
+      reject(new Error('Private chat did not acknowledge the update. Reconnect and try again.'));
+    } else if (!response?.ok) {
+      reject(new Error(response?.error || 'Private chat rejected the update.'));
     } else {
       resolve(response);
     }
@@ -625,13 +634,24 @@ function App() {
   currentUserRef.current = currentUser;
   const activeChatRef = useRef(activeChat);
   activeChatRef.current = activeChat;
+  const privateChatRoomRef = useRef({ chatId: null, joined: false, promise: null });
   const privateTypingTimerRef = useRef(null);
   const privateTypingChatRef = useRef(null);
   const privateTypingLastSentAtRef = useRef(0);
+  const privateTypingExpiryTimersRef = useRef(new Map());
+  const privateSeenUpdatesRef = useRef(new Map());
   const seenUpdatePendingRef = useRef(new Set());
 
   const messagesEndRef = useRef(null);
   const chatContainerRef = useRef(null);
+
+  useEffect(() => {
+    const privateTypingExpiryTimers = privateTypingExpiryTimersRef.current;
+    return () => {
+      privateTypingExpiryTimers.forEach(timer => window.clearTimeout(timer));
+      privateTypingExpiryTimers.clear();
+    };
+  }, []);
 
   const AVAILABLE_SEEDS = [
     'Amaya', 'Brian', 'Chloe', 'Daniel', 'Emily', 'George', 'Heidi', 'Ian', 'Jessica', 
@@ -647,18 +667,58 @@ function App() {
 
   const getMyId = useCallback(() => auth.currentUser?.uid || currentUser?.uid || socket.id, [currentUser]);
 
-  const updatePrivateTyping = useCallback((chatId, isTyping) => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    setDoc(doc(db, 'private_chats', chatId, 'typing', uid), {
-      uid,
-      isTyping,
-      updatedAt: serverTimestamp()
-    }, { merge: true }).catch(error => {
-      console.error('Private typing status update failed:', error);
-      setNotificationStatus('Private typing status could not sync. Check Firestore access and reload.');
-    });
+  const rememberPrivateSeenUpdate = useCallback((chatId, messageId, userId) => {
+    if (typeof chatId !== 'string' || typeof messageId !== 'string' || typeof userId !== 'string') return;
+    let chatUpdates = privateSeenUpdatesRef.current.get(chatId);
+    if (!chatUpdates) {
+      chatUpdates = new Map();
+      privateSeenUpdatesRef.current.set(chatId, chatUpdates);
+    }
+    let seenBy = chatUpdates.get(messageId);
+    if (!seenBy) {
+      seenBy = new Set();
+      chatUpdates.set(messageId, seenBy);
+    }
+    seenBy.add(userId);
   }, []);
+
+  const joinPrivateChat = useCallback((chatId) => {
+    if (!socket.connected) return Promise.reject(new Error('Chat server is disconnected. Reconnect and try again.'));
+    if (!socketUserReadyRef.current) {
+      return Promise.reject(new Error('Chat server could not verify your sign-in. Check the backend Firebase Admin setup.'));
+    }
+
+    const currentRoom = privateChatRoomRef.current;
+    if (currentRoom.chatId === chatId && currentRoom.joined) return Promise.resolve({ ok: true });
+    if (currentRoom.chatId === chatId && currentRoom.promise) return currentRoom.promise;
+
+    const joiningRoom = { chatId, joined: false, promise: null };
+    privateChatRoomRef.current = joiningRoom;
+    joiningRoom.promise = ensurePrivateChatJoined(chatId)
+      .then(response => {
+        if (privateChatRoomRef.current === joiningRoom) {
+          joiningRoom.joined = true;
+          joiningRoom.promise = null;
+        }
+        return response;
+      })
+      .catch(error => {
+        if (privateChatRoomRef.current === joiningRoom) {
+          privateChatRoomRef.current = { chatId: null, joined: false, promise: null };
+        }
+        throw error;
+      });
+    return joiningRoom.promise;
+  }, []);
+
+  const updatePrivateTyping = useCallback((chatId, isTyping) => {
+    joinPrivateChat(chatId)
+      .then(() => emitPrivateChatAcknowledgement('typing', { chatId, isTyping }))
+      .catch(error => {
+        console.error('Private typing update failed:', error);
+        setNotificationStatus(error.message);
+      });
+  }, [joinPrivateChat]);
 
   const stopPrivateTyping = useCallback((chatId) => {
     if (privateTypingTimerRef.current) {
@@ -861,7 +921,7 @@ function App() {
               activeChatRef.current = savedChat;
               setActiveChatState(savedChat);
               if (savedChat.type === 'private') {
-                ensurePrivateChatJoined(savedChat.id).catch(error => {
+                joinPrivateChat(savedChat.id).catch(error => {
                   if (socketUserReadyRef.current) setNotificationStatus(error.message);
                 });
               } else {
@@ -887,7 +947,7 @@ function App() {
       unsubscribe();
       if (splashTimer) clearTimeout(splashTimer);
     };
-  }, [username]);
+  }, [username, joinPrivateChat]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -896,6 +956,7 @@ function App() {
       const firebaseUser = auth.currentUser;
       if (!currentUserRef.current || !firebaseUser) return;
       socketUserReadyRef.current = false;
+      privateChatRoomRef.current = { chatId: null, joined: false, promise: null };
       firebaseUser.getIdToken().then(idToken => {
         socket.timeout(5000).emit('login_user', { ...currentUserRef.current, idToken }, (error, result) => {
           if (error || !result?.ok) {
@@ -913,7 +974,7 @@ function App() {
             ? ''
             : current);
           if (activeChatRef.current?.type === 'private') {
-            ensurePrivateChatJoined(activeChatRef.current.id)
+            joinPrivateChat(activeChatRef.current.id)
               .catch(error => setNotificationStatus(error.message));
           }
           if (pushTokenRef.current) registerPushToken(pushTokenRef.current);
@@ -923,7 +984,10 @@ function App() {
         setNotificationStatus('Could not refresh your sign-in. Please sign in again.');
       });
     };
-    const handleSocketDisconnect = () => { socketUserReadyRef.current = false; };
+    const handleSocketDisconnect = () => {
+      socketUserReadyRef.current = false;
+      privateChatRoomRef.current = { chatId: null, joined: false, promise: null };
+    };
 
     socket.on('connect', loginSocketUser);
     socket.on('disconnect', handleSocketDisconnect);
@@ -932,7 +996,7 @@ function App() {
       socket.off('connect', loginSocketUser);
       socket.off('disconnect', handleSocketDisconnect);
     };
-  }, [isLoggedIn, registerPushToken]);
+  }, [isLoggedIn, registerPushToken, joinPrivateChat]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -999,19 +1063,13 @@ function App() {
           const pendingKey = `${activeChat.id}:${lastMessage.id}:${myId}`;
           if (seenUpdatePendingRef.current.has(pendingKey)) return;
           seenUpdatePendingRef.current.add(pendingKey);
-          const messageQuery = query(
-            collection(db, 'private_chats', activeChat.id, 'messages'),
-            where('id', '==', lastMessage.id)
-          );
-          getDocs(messageQuery)
-            .then(snapshot => {
-              if (snapshot.empty) throw new Error('The message could not be found in Firestore.');
-              return Promise.all(snapshot.docs.map(messageDoc => updateDoc(
-                messageDoc.ref,
-                { seenBy: arrayUnion(myId) }
-              )));
-            })
+          joinPrivateChat(activeChat.id)
+            .then(() => emitPrivateChatAcknowledgement('messageSeen', {
+              chatId: activeChat.id,
+              messageId: lastMessage.id
+            }))
             .then(() => {
+              rememberPrivateSeenUpdate(activeChat.id, lastMessage.id, myId);
               setMessages(previous => {
                 const currentMessages = previous[activeChat.id] || [];
                 const updatedMessages = currentMessages.map(message => (
@@ -1024,10 +1082,10 @@ function App() {
             })
             .catch(error => {
               console.error('Private message seen update failed:', error);
-              setNotificationStatus('Seen status could not sync. Check Firestore access and reload.');
+              setNotificationStatus(error.message);
             })
             .finally(() => seenUpdatePendingRef.current.delete(pendingKey));
-        } else {
+        } else if (activeChat.type !== 'private') {
           socket.emit("messageSeen", {
             chatId: activeChat.id,
             messageId: lastMessage.id,
@@ -1036,7 +1094,7 @@ function App() {
         }
       }
     }
-  }, [messages, activeChat, getMyId]);
+  }, [messages, activeChat, getMyId, joinPrivateChat, rememberPrivateSeenUpdate]);
 
   useEffect(() => {
     const handleUsersUpdate = (data) => {
@@ -1075,20 +1133,52 @@ function App() {
     };
 
     const handleMessagesUpdated = (data) => {
-      setMessages(prev => ({ ...prev, [data.chatId]: data.messages }));
+      const liveSeenUpdates = data.chatId.includes('--')
+        ? privateSeenUpdatesRef.current.get(data.chatId)
+        : null;
+      const incomingMessages = liveSeenUpdates
+        ? data.messages.map(message => {
+          const rememberedSeenBy = liveSeenUpdates.get(message.id);
+          if (!rememberedSeenBy) return message;
+          return {
+            ...message,
+            seenBy: Array.from(new Set([
+              ...(Array.isArray(message.seenBy) ? message.seenBy : []),
+              ...rememberedSeenBy
+            ]))
+          };
+        })
+        : data.messages;
+      setMessages(prev => ({ ...prev, [data.chatId]: incomingMessages }));
     };
 
    // --- Handlers ---
   const handleUserTyping = (data) => {
-     if (typeof data.chatId !== 'string' || data.chatId.includes('--')) return;
+    if (typeof data.chatId !== 'string' || !data.chatId) return;
+    if (data.chatId.includes('--')) {
+      const currentTimer = privateTypingExpiryTimersRef.current.get(data.chatId);
+      if (currentTimer) window.clearTimeout(currentTimer);
+      privateTypingExpiryTimersRef.current.delete(data.chatId);
+      if (data.isTyping) {
+        const timer = window.setTimeout(() => {
+          privateTypingExpiryTimersRef.current.delete(data.chatId);
+          setTypingStatus(previous => ({
+            ...previous,
+            [data.chatId]: { isTyping: false, user: data.username || 'User' }
+          }));
+        }, 5000);
+        privateTypingExpiryTimersRef.current.set(data.chatId, timer);
+      }
+    }
     setTypingStatus((prev) => ({
       ...prev,
-      [data.chatId]: { isTyping: data.isTyping, user: data.username },
+      [data.chatId]: { isTyping: Boolean(data.isTyping), user: data.username || 'User' },
     }));
   };
 
   const handleUserSeenUpdate = ({ chatId, messageId, userId }) => {
-    if (typeof chatId !== 'string' || chatId.includes('--')) return;
+    if (typeof chatId !== 'string' || !chatId) return;
+    if (chatId.includes('--')) rememberPrivateSeenUpdate(chatId, messageId, userId);
     setMessages((prev) => {
       const updated = { ...prev };
       const chatMsgs = updated[chatId] ? [...updated[chatId]] : [];
@@ -1176,7 +1266,7 @@ function App() {
     socket.off("game_invite_error", handleGameInviteError);
     socket.off("game_invite_sent", handleGameInviteSent);
   };
-}, [activeChat]);
+}, [activeChat, rememberPrivateSeenUpdate]);
 
   useEffect(() => {
     if (!activeChat || !auth.currentUser) return;
@@ -1196,7 +1286,17 @@ function App() {
           const currentList = prev[activeChat.id] || [];
           const msgMap = new Map();
           currentList.forEach(m => msgMap.set(m.id, m));
-          fetchedMsgs.forEach(m => msgMap.set(m.id, m));
+          const liveSeenUpdates = privateSeenUpdatesRef.current.get(activeChat.id);
+          fetchedMsgs.forEach(message => {
+            const currentMessage = msgMap.get(message.id);
+            const rememberedSeenBy = liveSeenUpdates?.get(message.id) || new Set();
+            const seenBy = Array.from(new Set([
+              ...(Array.isArray(message.seenBy) ? message.seenBy : []),
+              ...(Array.isArray(currentMessage?.seenBy) ? currentMessage.seenBy : []),
+              ...rememberedSeenBy
+            ]));
+            msgMap.set(message.id, { ...message, seenBy });
+          });
 
           const mergedList = Array.from(msgMap.values()).sort((a, b) => (a.timestampRaw || 0) - (b.timestampRaw || 0));
           return { ...prev, [activeChat.id]: mergedList };
@@ -1206,46 +1306,6 @@ function App() {
       return () => unsubscribe();
     }
   }, [activeChat]);
-
-  useEffect(() => {
-    if (!isLoggedIn || activeChat?.type !== 'private' || !auth.currentUser?.uid) return;
-    const participants = activeChat.id.split('--');
-    if (participants.length !== 2) return;
-    const peerUid = participants.find(uid => uid !== auth.currentUser.uid);
-    if (!peerUid) return;
-
-    let expiryTimer;
-    const unsubscribe = onSnapshot(doc(db, 'private_chats', activeChat.id, 'typing', peerUid), snapshot => {
-      if (expiryTimer) window.clearTimeout(expiryTimer);
-      const typingData = snapshot.data();
-      const updatedAt = typingData?.updatedAt?.toMillis?.();
-      const expiresIn = 5000 - (Date.now() - updatedAt);
-      const isTyping = typingData?.uid === peerUid
-        && typingData.isTyping === true
-        && Number.isFinite(updatedAt)
-        && expiresIn > 0;
-      setTypingStatus(previous => ({
-        ...previous,
-        [activeChat.id]: { isTyping, user: activeChat.name }
-      }));
-      if (isTyping) {
-        expiryTimer = window.setTimeout(() => {
-          setTypingStatus(previous => ({
-            ...previous,
-            [activeChat.id]: { isTyping: false, user: activeChat.name }
-          }));
-        }, expiresIn);
-      }
-    }, error => {
-      console.error('Private typing status listener failed:', error);
-      setNotificationStatus('Private typing status could not load. Check Firestore access and reload.');
-    });
-
-    return () => {
-      if (expiryTimer) window.clearTimeout(expiryTimer);
-      unsubscribe();
-    };
-  }, [isLoggedIn, activeChat?.id, activeChat?.name, activeChat?.type]);
 
   const startRecording = async () => {
     try {
@@ -1379,7 +1439,7 @@ function App() {
   const selectChat = useCallback((chatObj) => {
     setActiveChat(chatObj);
     if (chatObj.type === 'private') {
-      ensurePrivateChatJoined(chatObj.id).catch(error => {
+      joinPrivateChat(chatObj.id).catch(error => {
         if (socketUserReadyRef.current) setNotificationStatus(error.message);
       });
     } else {
@@ -1388,7 +1448,7 @@ function App() {
     setReplyToMsg(null);
     setEditMsg(null);
     set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
-  }, [setActiveChat]);
+  }, [setActiveChat, joinPrivateChat]);
 
   useEffect(() => {
     if (!isLoggedIn || !('serviceWorker' in navigator)) return;
