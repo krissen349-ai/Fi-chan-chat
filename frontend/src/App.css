@@ -39,6 +39,7 @@ body {
   display: flex;
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
+  height: 100vh;
   height: 100dvh;
   width: 100vw;
   overflow: hidden;
@@ -79,8 +80,8 @@ body.light-theme .chat-item-row:hover, body.light-theme .chat-item-row.selected 
 .online-tag { color: #4ade80 !important; }
 
 /* Main Framework Layer Component */
-.chat-stream { flex: 1; display: flex; flex-direction: column; background: var(--bg-primary); position: relative; }
-.chat-header { padding: 10px 20px; background: var(--bg-sidebar) !important; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 12px; min-height: 60px; z-index: 10; }
+.chat-stream { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-primary); position: relative; }
+.chat-header { position: sticky; top: 0; flex: 0 0 auto; padding: 10px 20px; background: var(--bg-sidebar) !important; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 12px; min-height: 60px; z-index: 10; }
 body.light-theme .chat-header { background: #f5f5f7 !important; }
 body.light-theme .chat-header h3 { color: #1c1c1e !important; }
 body.light-theme .chat-header .sub-header-info { color: var(--instagram-blue) !important; font-weight: 500; }
@@ -93,7 +94,7 @@ body.light-theme .chat-header .sub-header-info { color: var(--instagram-blue) !i
 body.light-theme .back-btn-mobile { color: #1c1c1e !important; }
 
 /* Perfect Instagram Rows Layout Grid */
-.chat-messages-box { flex: 1; padding: 2rem; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+.chat-messages-box { flex: 1 1 auto; min-height: 0; padding: 2rem; overflow-y: auto; overscroll-behavior-y: contain; display: flex; flex-direction: column; gap: 20px; }
 .message-row { display: flex; flex-direction: column; width: 100%; margin: 4px 0; }
 .message-row.outgoing { align-items: flex-end; }
 .message-row.incoming { align-items: flex-start; }
@@ -165,7 +166,7 @@ body.light-theme .menu-actions-list button:hover { background: #f2f2f7; }
 .reaction-count { font-size: 10px; font-weight: bold; color: var(--text-muted); }
 
 /* ✨ PRE-INPUT LAYOUT WRAPPER BAR STRIPS */
-.chat-footer-wrapper { display: flex; flex-direction: column; width: 100%; border-top: 1px solid var(--border-color); background: var(--bg-sidebar); }
+.chat-footer-wrapper { flex: 0 0 auto; display: flex; flex-direction: column; width: 100%; border-top: 1px solid var(--border-color); background: var(--bg-sidebar); }
 .faded-action-preview-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: rgba(0,0,0,0.12); border-left: 4px solid var(--instagram-blue); animation: slideDown 0.2s ease; }
 body.light-theme .faded-action-preview-bar { background: rgba(0,0,0,0.03); }
 .edit-mode-strip { border-left-color: #ffcc00; }
@@ -278,7 +279,7 @@ body.light-theme .avatar-modal-content, body.light-theme .custom-popup-card { ba
 /* Responsive Media Queries Configuration */
 @media (max-width: 768px) {
   .sidebar { width: 100vw; height: 100dvh; }
-  .chat-stream { width: 100vw; height: 100dvh; display: flex !important; }
+  .chat-stream { width: 100vw; height: 100%; display: flex !important; }
   .hide-mobile { display: none !important; }
   .back-btn-mobile { display: block !important; }
   .chat-messages-box { padding: 15px; }
