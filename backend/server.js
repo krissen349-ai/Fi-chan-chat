@@ -9,7 +9,9 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const nodemailer = require('nodemailer'); 
-const admin = require('firebase-admin');
+const { applicationDefault, cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
+const { getMessaging } = require('firebase-admin/messaging');
 const { randomUUID } = require('crypto');
 const {
     GLASS_BRIDGE,
@@ -76,6 +78,7 @@ const connectMongo = () => {
 connectMongo().catch(() => {});
 
 let firebaseAdminReady = false;
+let firebaseAdminApp = null;
 const firebaseProjectId = process.env.FIREBASE_PROJECT_ID
     || process.env.GOOGLE_CLOUD_PROJECT
     || process.env.GCLOUD_PROJECT;
@@ -92,15 +95,15 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || hasApplicationDefaultCredential
                 const serviceAccount = JSON.parse(serviceAccountJson);
                 serviceAccount.private_key = serviceAccount.private_key?.replace(/\\n/g, '\n');
                 return {
-                    credential: admin.credential.cert(serviceAccount),
+                    credential: cert(serviceAccount),
                     projectId: firebaseProjectId || serviceAccount.project_id
                 };
             })()
             : {
-                credential: admin.credential.applicationDefault(),
+                credential: applicationDefault(),
                 projectId: firebaseProjectId
             };
-        if (!admin.apps.length) admin.initializeApp(options);
+        firebaseAdminApp = getApps()[0] || initializeApp(options);
         firebaseAdminReady = true;
         console.log('Firebase Admin authentication and push notifications enabled.');
     } catch (error) {
@@ -154,7 +157,7 @@ async function sendPushToUsers(uids, title, body, chatId) {
         const records = await PushToken.find({ uid: { $in: uids } }).lean();
         if (!records.length) return;
 
-        const response = await admin.messaging().sendEachForMulticast({
+        const response = await getMessaging(firebaseAdminApp).sendEachForMulticast({
             tokens: records.map(record => record.token),
             data: {
                 title: String(title).slice(0, 100),
@@ -191,6 +194,11 @@ let groupFileStoreBytes = 0;
 const GROUP_FILE_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_GROUP_FILE_STORE_BYTES = 100 * 1024 * 1024;
 const GROUP_FILE_CHUNK_LIMIT = 700000;
+const privateFileStore = new Map();
+let privateFileStoreBytes = 0;
+const PRIVATE_FILE_TTL_MS = GROUP_FILE_TTL_MS;
+const MAX_PRIVATE_FILE_STORE_BYTES = 100 * 1024 * 1024;
+const PRIVATE_FILE_CHUNK_LIMIT = GROUP_FILE_CHUNK_LIMIT;
 let activeGames = {}; // 🎮 Game state store karne ke liye
 const pendingGameInvites = new Map();
 const pendingGameInvitesByChat = new Map();
@@ -213,6 +221,37 @@ const cleanExpiredGroupFiles = () => {
 
 const groupFileCleanupTimer = setInterval(cleanExpiredGroupFiles, 10 * 60 * 1000);
 groupFileCleanupTimer.unref?.();
+
+const removePrivateFile = (fileId) => {
+    const storedFile = privateFileStore.get(fileId);
+    if (!storedFile) return;
+    privateFileStoreBytes -= storedFile.reservedBytes;
+    privateFileStore.delete(fileId);
+};
+
+const cleanExpiredPrivateFiles = () => {
+    const now = Date.now();
+    privateFileStore.forEach((storedFile, fileId) => {
+        if (storedFile.expiresAt <= now) removePrivateFile(fileId);
+    });
+};
+
+const privateFileCleanupTimer = setInterval(cleanExpiredPrivateFiles, 10 * 60 * 1000);
+privateFileCleanupTimer.unref?.();
+
+const getPrivateChatParticipants = (chatId) => {
+    if (typeof chatId !== 'string' || chatId.length > 200) return null;
+    const participants = chatId.split('--');
+    if (participants.length !== 2 || !participants[0] || !participants[1]
+        || participants[0] === participants[1]
+        || participants.slice().sort().join('--') !== chatId) return null;
+    return participants;
+};
+
+const isVerifiedPrivateParticipant = (user, chatId) => {
+    const participants = getPrivateChatParticipants(chatId);
+    return Boolean(user?.verifiedUid && participants?.includes(user.verifiedUid));
+};
 
 const SUPPORTED_GAME_IDS = new Set([
     'tic-tac-toe',
@@ -451,10 +490,17 @@ io.on('connection', (socket) => {
         let verifiedUid = null;
         if (firebaseAdminReady && idToken) {
             try {
-                verifiedUid = (await admin.auth().verifyIdToken(idToken)).uid;
+                verifiedUid = (await getAuth(firebaseAdminApp).verifyIdToken(idToken)).uid;
             } catch (error) {
                 console.warn('Firebase socket authentication failed:', error.message);
             }
+        }
+
+        const previousVerifiedUid = users[socket.id]?.verifiedUid;
+        if (previousVerifiedUid !== verifiedUid) {
+            socket.rooms.forEach(room => {
+                if (room.includes('--')) socket.leave(room);
+            });
         }
 
         const uid = verifiedUid || publicUserData.uid;
@@ -492,6 +538,30 @@ io.on('connection', (socket) => {
         } else {
             socket.emit('update_gifts', []);
         }
+    });
+
+    socket.on('update_profile', (profileData = {}) => {
+        const currentUser = users[socket.id];
+        if (!currentUser?.verifiedUid) return;
+
+        const username = typeof profileData.username === 'string'
+            ? profileData.username.trim().slice(0, 50)
+            : currentUser.username;
+        const bio = typeof profileData.bio === 'string' && profileData.bio.length <= 100
+            ? profileData.bio
+            : currentUser.bio;
+        const pfp = typeof profileData.pfp === 'string' && profileData.pfp.length <= 700000
+            ? profileData.pfp
+            : currentUser.pfp;
+
+        users[socket.id] = {
+            ...currentUser,
+            uid: currentUser.verifiedUid,
+            username: username || currentUser.username,
+            bio,
+            pfp
+        };
+        io.emit('update_users', Object.values(users));
     });
 
     socket.on('register_push_token', async ({ token } = {}, acknowledge) => {
@@ -920,11 +990,18 @@ io.on('connection', (socket) => {
     });
 
     // 💬 Chat Logic
-    socket.on('join_chat', (chatId) => {
+    socket.on('join_chat', (chatId, acknowledge) => {
+        if (typeof chatId !== 'string' || !chatId) {
+            return acknowledge?.({ ok: false, error: 'This chat is invalid.' });
+        }
+        if (chatId.includes('--') && !isVerifiedPrivateParticipant(users[socket.id], chatId)) {
+            return acknowledge?.({ ok: false, error: 'Sign in as a participant to join this private chat.' });
+        }
         socket.join(chatId);
         if (messages[chatId]) {
             socket.emit('messages_updated', { chatId, messages: messages[chatId] });
         }
+        acknowledge?.({ ok: true });
     });
 
     socket.on('group_file_start', ({ fileId, chatId, chunkCount, size, contentType } = {}, acknowledge) => {
@@ -1012,6 +1089,126 @@ io.on('connection', (socket) => {
         const storedFile = groupFileStore.get(fileId);
         if (storedFile?.ownerUid === users[socket.id]?.uid && !storedFile.complete) {
             removeGroupFile(fileId);
+        }
+    });
+
+    socket.on('private_file_start', async ({ fileId, chatId, chunkCount, size, contentType } = {}, acknowledge) => {
+        const user = users[socket.id];
+        cleanExpiredPrivateFiles();
+        const participants = getPrivateChatParticipants(chatId);
+        if (!user?.verifiedUid || !participants?.includes(user.verifiedUid)
+            || !socket.rooms.has(chatId)) {
+            return acknowledge?.({ ok: false, error: 'Join this private chat with a verified participant account before sharing a file.' });
+        }
+        if (!/^[0-9a-f-]{36}$/i.test(fileId)
+            || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 40
+            || !Number.isInteger(size) || size < 1 || size > 20 * 1024 * 1024
+            || chunkCount !== Math.ceil(size / 525000)
+            || typeof contentType !== 'string' || contentType.length > 120) {
+            return acknowledge?.({ ok: false, error: 'This private file is invalid or exceeds the 20 MB limit.' });
+        }
+        if (privateFileStore.has(fileId)) {
+            return acknowledge?.({ ok: false, error: 'This private file transfer ID is already in use.' });
+        }
+        const recipientUid = participants.find(uid => uid !== user.verifiedUid);
+        try {
+            const recipient = await getAuth(firebaseAdminApp).getUser(recipientUid);
+            if (recipient.disabled) {
+                return acknowledge?.({ ok: false, error: 'The other private chat participant cannot receive files.' });
+            }
+        } catch (error) {
+            console.error('Private file recipient verification failed:', error.message);
+            return acknowledge?.({
+                ok: false,
+                error: error.code === 'auth/user-not-found'
+                    ? 'The other private chat participant is not a valid account.'
+                    : 'Could not verify the other private chat participant.'
+            });
+        }
+        const reservedBytes = Math.ceil(size * 4 / 3);
+        if (privateFileStoreBytes + reservedBytes > MAX_PRIVATE_FILE_STORE_BYTES) {
+            return acknowledge?.({ ok: false, error: 'Private file sharing is temporarily full. Try again later.' });
+        }
+
+        privateFileStore.set(fileId, {
+            chatId,
+            ownerUid: user.verifiedUid,
+            chunkCount,
+            size,
+            reservedBytes,
+            contentType,
+            chunks: Array(chunkCount),
+            complete: false,
+            expiresAt: Date.now() + PRIVATE_FILE_TTL_MS
+        });
+        privateFileStoreBytes += reservedBytes;
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('private_file_chunk', ({ fileId, chunkIndex, data } = {}, acknowledge) => {
+        const storedFile = privateFileStore.get(fileId);
+        const user = users[socket.id];
+        if (!storedFile || storedFile.ownerUid !== user?.verifiedUid || storedFile.complete
+            || !isVerifiedPrivateParticipant(user, storedFile.chatId)
+            || !socket.rooms.has(storedFile.chatId)
+            || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= storedFile.chunkCount
+            || typeof data !== 'string' || !data.length || data.length > PRIVATE_FILE_CHUNK_LIMIT
+            || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+            return acknowledge?.({ ok: false, error: 'This private file chunk is not valid.' });
+        }
+
+        const expectedChunkSize = Math.min(525000, storedFile.size - chunkIndex * 525000);
+        const decodedChunk = Buffer.from(data, 'base64');
+        if (decodedChunk.length !== expectedChunkSize || decodedChunk.toString('base64') !== data) {
+            return acknowledge?.({ ok: false, error: 'This private file chunk has an invalid size or encoding.' });
+        }
+
+        storedFile.chunks[chunkIndex] = data;
+        storedFile.expiresAt = Date.now() + PRIVATE_FILE_TTL_MS;
+        socket.to(storedFile.chatId).emit('private_file_chunk', {
+            fileId,
+            chunkIndex,
+            chunkCount: storedFile.chunkCount,
+            data
+        });
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('private_file_finish', ({ fileId } = {}, acknowledge) => {
+        const storedFile = privateFileStore.get(fileId);
+        const user = users[socket.id];
+        if (!storedFile || storedFile.ownerUid !== user?.verifiedUid
+            || !isVerifiedPrivateParticipant(user, storedFile.chatId)
+            || !socket.rooms.has(storedFile.chatId)
+            || storedFile.chunks.some(chunk => typeof chunk !== 'string')) {
+            return acknowledge?.({ ok: false, error: 'The private file did not finish uploading. Please retry.' });
+        }
+        storedFile.complete = true;
+        acknowledge?.({ ok: true });
+    });
+
+    socket.on('private_file_download', ({ fileId, chatId } = {}) => {
+        const storedFile = privateFileStore.get(fileId);
+        const user = users[socket.id];
+        if (!storedFile?.complete || storedFile.chatId !== chatId
+            || !isVerifiedPrivateParticipant(user, storedFile.chatId)
+            || !socket.rooms.has(storedFile.chatId)) return;
+        storedFile.chunks.forEach((data, chunkIndex) => {
+            socket.emit('private_file_chunk', {
+                fileId,
+                chunkIndex,
+                chunkCount: storedFile.chunkCount,
+                data
+            });
+        });
+    });
+
+    socket.on('private_file_cancel', ({ fileId } = {}) => {
+        const storedFile = privateFileStore.get(fileId);
+        const user = users[socket.id];
+        if (storedFile?.ownerUid === user?.verifiedUid && !storedFile.complete
+            && isVerifiedPrivateParticipant(user, storedFile.chatId)) {
+            removePrivateFile(fileId);
         }
     });
 

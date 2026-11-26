@@ -10,6 +10,8 @@ import { set, get, del } from 'idb-keyval';
 
 import { messagingPromise } from "./firebase";
 import { auth, db } from './firebase';
+import { compressProfilePhoto } from './profilePhoto';
+import { persistProfile } from './profilePersistence';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -28,8 +30,7 @@ import {
   deleteDoc, 
   doc,     
   setDoc,
-  getDoc,
-  writeBatch
+  getDoc
 } from 'firebase/firestore';
 
 const LineIcon = ({ name, size = 19 }) => {
@@ -89,15 +90,16 @@ const socket = io(getSocketBaseUrl(), {
 
 const FIRESTORE_UPLOAD_PREFIX = 'fi-upload:';
 const GROUP_UPLOAD_PREFIX = 'fi-group-file:';
+const PRIVATE_UPLOAD_PREFIX = 'fi-private-file:';
 const UPLOAD_CHUNK_BYTES = 525000;
-const UPLOAD_CHUNKS_PER_BATCH = 10;
 const PRIVATE_CHAT_FILE_MAX_BYTES = 20 * 1024 * 1024;
 const GROUP_CHAT_FILE_MAX_BYTES = 15 * 1024 * 1024;
 const PRIVATE_CHAT_FILE_MAX_CHUNKS = Math.ceil(PRIVATE_CHAT_FILE_MAX_BYTES / UPLOAD_CHUNK_BYTES);
-const PROFILE_PHOTO_MAX_BYTES = 500000;
 const uploadedFileUrlCache = new Map();
 const groupFileChunkCache = new Map();
 const groupFileChunkWaiters = new Map();
+const privateFileChunkCache = new Map();
+const privateFileChunkWaiters = new Map();
 
 const cacheGroupFileChunk = ({ fileId, chunkIndex, chunkCount, data }) => {
   if (typeof fileId !== 'string' || !Number.isInteger(chunkIndex)
@@ -118,6 +120,26 @@ const cacheGroupFileChunk = ({ fileId, chunkIndex, chunkCount, data }) => {
 };
 
 socket.on('group_file_chunk', cacheGroupFileChunk);
+
+const cachePrivateFileChunk = ({ fileId, chunkIndex, chunkCount, data }) => {
+  if (typeof fileId !== 'string' || !Number.isInteger(chunkIndex)
+    || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > PRIVATE_CHAT_FILE_MAX_CHUNKS
+    || chunkIndex < 0 || chunkIndex >= chunkCount || typeof data !== 'string' || data.length > 700000) return;
+
+  let cached = privateFileChunkCache.get(fileId);
+  if (!cached || cached.chunkCount !== chunkCount) {
+    cached = { chunkCount, chunks: Array(chunkCount) };
+    privateFileChunkCache.set(fileId, cached);
+  }
+  cached.chunks[chunkIndex] = data;
+  const waiter = privateFileChunkWaiters.get(fileId);
+  if (waiter && cached.chunks.every(Boolean)) {
+    privateFileChunkWaiters.delete(fileId);
+    waiter.resolve(cached.chunks);
+  }
+};
+
+socket.on('private_file_chunk', cachePrivateFileChunk);
 
 const emitSocketAcknowledgement = (eventName, data) => new Promise((resolve, reject) => {
   socket.timeout(15000).emit(eventName, data, (timeoutError, response) => {
@@ -152,12 +174,26 @@ const getGroupFileChunks = (fileId, chunkCount) => {
   });
 };
 
-const sanitizeUploadFileName = (fileName) => Array.from(fileName || 'upload', character => {
-  const codePoint = character.codePointAt(0);
-  return character === '/' || character === '\\' || codePoint < 32 || (codePoint >= 127 && codePoint <= 159)
-    ? '_'
-    : character;
-}).join('').slice(-180);
+const getPrivateFileChunks = (chatId, fileId, chunkCount) => {
+  const cached = privateFileChunkCache.get(fileId);
+  if (cached?.chunkCount === chunkCount && cached.chunks.every(Boolean)) {
+    return Promise.resolve(cached.chunks);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      privateFileChunkWaiters.delete(fileId);
+      reject(new Error('This private chat file is no longer available. Ask the sender to share it again.'));
+    }, 15000);
+    privateFileChunkWaiters.set(fileId, {
+      resolve: chunks => {
+        window.clearTimeout(timer);
+        resolve(chunks);
+      }
+    });
+    socket.emit('private_file_download', { chatId, fileId });
+  });
+};
 
 const getUploadErrorMessage = (error) => {
   if (error?.code === 'permission-denied') {
@@ -184,6 +220,23 @@ const getUploadedFileObjectUrl = async (fileUrl) => {
     }
     if (uploadedFileUrlCache.has(fileUrl)) return uploadedFileUrlCache.get(fileUrl);
     const chunks = await getGroupFileChunks(fileId, chunkCount);
+    const bytes = decodeBase64Chunks(chunks);
+    const contentType = decodeURIComponent(encodedContentType || 'application/octet-stream');
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+    uploadedFileUrlCache.set(fileUrl, objectUrl);
+    return objectUrl;
+  }
+
+  if (fileUrl.startsWith(PRIVATE_UPLOAD_PREFIX)) {
+    const [, chatId, fileId, count, encodedContentType] = fileUrl.split(':');
+    const chunkCount = Number(count);
+    if (!chatId || chatId.split('--').length !== 2
+      || !/^[0-9a-f-]{36}$/i.test(fileId)
+      || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > PRIVATE_CHAT_FILE_MAX_CHUNKS) {
+      throw new Error('This private file link is invalid.');
+    }
+    if (uploadedFileUrlCache.has(fileUrl)) return uploadedFileUrlCache.get(fileUrl);
+    const chunks = await getPrivateFileChunks(chatId, fileId, chunkCount);
     const bytes = decodeBase64Chunks(chunks);
     const contentType = decodeURIComponent(encodedContentType || 'application/octet-stream');
     const objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
@@ -236,36 +289,6 @@ const decodeBase64Chunks = (chunks) => {
   return bytes;
 };
 
-const compressProfilePhoto = async (file) => {
-  const image = await createImageBitmap(file);
-  try {
-    const canvas = document.createElement('canvas');
-    const scale = Math.min(1, 1200 / Math.max(image.width, image.height));
-    canvas.width = Math.max(1, Math.round(image.width * scale));
-    canvas.height = Math.max(1, Math.round(image.height * scale));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not prepare this profile photo.');
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
-    const toJpegBlob = quality => new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
-    let quality = 0.82;
-    let blob = await toJpegBlob(quality);
-    while (blob && blob.size > PROFILE_PHOTO_MAX_BYTES && quality > 0.5) {
-      quality -= 0.1;
-      blob = await toJpegBlob(quality);
-    }
-    if (!blob || blob.size > PROFILE_PHOTO_MAX_BYTES) throw new Error('Could not compress this photo enough. Please choose a smaller image.');
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error || new Error('Could not read the compressed profile photo.'));
-      reader.readAsDataURL(blob);
-    });
-  } finally {
-    image.close();
-  }
-};
-
 const uploadFile = async (file, kind, chatId = null) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in before uploading files.');
@@ -287,7 +310,6 @@ const uploadFile = async (file, kind, chatId = null) => {
       throw new Error('Profile photos must be image files.');
     }
     const photoDataUrl = await compressProfilePhoto(file);
-    await setDoc(doc(db, 'users', user.uid), { pfp: photoDataUrl }, { merge: true });
     return photoDataUrl;
   }
 
@@ -296,7 +318,6 @@ const uploadFile = async (file, kind, chatId = null) => {
   }
   const fileId = crypto.randomUUID();
   const chunkCount = Math.ceil(file.size / UPLOAD_CHUNK_BYTES);
-  const safeName = sanitizeUploadFileName(file.name);
   if (!chatId.includes('--')) {
     await emitSocketAcknowledgement('group_file_start', {
       fileId,
@@ -325,39 +346,32 @@ const uploadFile = async (file, kind, chatId = null) => {
     return `${GROUP_UPLOAD_PREFIX}${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
   }
 
-  const messagesRef = collection(db, 'private_chats', chatId, 'messages');
-  const ownerUid = user.uid;
-  const metadata = {
-    fileName: safeName || 'upload',
-    contentType: file.type || 'application/octet-stream',
-    size: file.size,
-    chunkCount,
-    timestampRaw: Date.now(),
-    _fiUploadChunk: true,
+  await emitSocketAcknowledgement('private_file_start', {
     fileId,
-    ownerUid
-  };
-
-  for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
-    const batch = writeBatch(db);
-    const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
-    for (let index = batchStart; index < batchEnd; index += 1) {
+    chatId,
+    chunkCount,
+    size: file.size,
+    contentType: file.type || 'application/octet-stream'
+  });
+  try {
+    for (let index = 0; index < chunkCount; index += 1) {
       const byteStart = index * UPLOAD_CHUNK_BYTES;
       const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
       let binaryChunk = '';
       for (let offset = 0; offset < fileChunk.length; offset += 32768) {
         binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
       }
-      batch.set(doc(messagesRef, `fi-file-${fileId}-${index}`), {
-        ...metadata,
-        chunkIndex: index,
-        data: btoa(binaryChunk)
-      });
+      const data = btoa(binaryChunk);
+      cachePrivateFileChunk({ fileId, chunkIndex: index, chunkCount, data });
+      await emitSocketAcknowledgement('private_file_chunk', { fileId, chunkIndex: index, data });
     }
-    await batch.commit();
+    await emitSocketAcknowledgement('private_file_finish', { fileId });
+  } catch (error) {
+    socket.emit('private_file_cancel', { fileId });
+    throw error;
   }
 
-  return `${FIRESTORE_UPLOAD_PREFIX}${chatId}:${fileId}:${chunkCount}`;
+  return `${PRIVATE_UPLOAD_PREFIX}${chatId}:${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
 };
 
 const ensureHostedImage = async (image) => {
@@ -556,6 +570,8 @@ function App() {
   const socketUserReadyRef = useRef(false);
   const currentUserRef = useRef(currentUser);
   currentUserRef.current = currentUser;
+  const activeChatRef = useRef(activeChat);
+  activeChatRef.current = activeChat;
 
   const messagesEndRef = useRef(null);
   const chatContainerRef = useRef(null);
@@ -671,6 +687,7 @@ function App() {
   }, [isLoggedIn, enableNotifications]);
 
   const setActiveChat = useCallback((chatObj) => {
+    activeChatRef.current = chatObj;
     setActiveChatState(chatObj);
     if (chatObj) {
       set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
@@ -678,6 +695,32 @@ function App() {
       del('chat_active_chat').catch(err => console.error("IDB Del Error:", err));
     }
   }, []);
+
+  useEffect(() => {
+    if (activeChat?.type !== 'private') return;
+    const peerUid = activeChat.userObj?.uid
+      || (typeof activeChat.id === 'string'
+        ? activeChat.id.split('--').find(uid => uid !== auth.currentUser?.uid)
+        : null);
+    if (!peerUid) return;
+
+    const latestPeer = allRegisteredUsers.find(user => user.uid === peerUid)
+      || usersList.find(user => user.uid === peerUid);
+    if (!latestPeer) return;
+    const updatedName = latestPeer.username || activeChat.name;
+    const updatedPfp = latestPeer.pfp || activeChat.userObj?.pfp;
+    if (activeChat.name === updatedName && activeChat.userObj?.pfp === updatedPfp) return;
+
+    setActiveChat({
+      ...activeChat,
+      name: updatedName,
+      userObj: {
+        ...activeChat.userObj,
+        ...latestPeer,
+        pfp: latestPeer.pfp || activeChat.userObj?.pfp
+      }
+    });
+  }, [activeChat, allRegisteredUsers, usersList, setActiveChat]);
 
   useEffect(() => {
     try {
@@ -695,15 +738,20 @@ function App() {
             return null;
           });
           const savedProfile = profileSnapshot?.exists() ? profileSnapshot.data() : {};
-          const savedBio = savedProfile.bio
-            || localStorage.getItem(`chat_bio_${user.uid}`)
-            || "Hey there! I am using Fi-chan Chat.";
-          const savedPfp = savedProfile.pfp || localStorage.getItem(`chat_pfp_${user.uid}`);
+          const savedUsername = typeof savedProfile.username === 'string' && savedProfile.username.trim()
+            ? savedProfile.username
+            : '';
+          const savedBio = typeof savedProfile.bio === 'string'
+            ? savedProfile.bio
+            : localStorage.getItem(`chat_bio_${user.uid}`) || "Hey there! I am using Fi-chan Chat.";
+          const savedPfp = typeof savedProfile.pfp === 'string' && savedProfile.pfp
+            ? savedProfile.pfp
+            : localStorage.getItem(`chat_pfp_${user.uid}`);
 
           const finalUser = {
             id: socket.id,
             uid: user.uid, 
-            username: user.displayName || username || "User",
+            username: savedUsername || user.displayName || username || "User",
             bio: savedBio,
             pfp: savedPfp || user.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${user.displayName || 'Amaya'}`
           };
@@ -725,6 +773,7 @@ function App() {
 
           get('chat_active_chat').then((savedChat) => {
             if (savedChat && savedChat.type !== 'ai') {
+              activeChatRef.current = savedChat;
               setActiveChatState(savedChat);
               socket.emit('join_chat', savedChat.id);
             } else if (savedChat?.type === 'ai') {
@@ -769,6 +818,9 @@ function App() {
             return;
           }
           socketUserReadyRef.current = true;
+          if (activeChatRef.current?.type === 'private') {
+            socket.emit('join_chat', activeChatRef.current.id);
+          }
           if (pushTokenRef.current) registerPushToken(pushTokenRef.current);
         });
       }).catch(error => {
@@ -1477,12 +1529,8 @@ function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
+    if (file.type && !file.type.startsWith('image/')) {
       alert('Please choose an image file.');
-      return;
-    }
-    if (!/^image\/(jpeg|png|gif|webp|avif|bmp)$/i.test(file.type)) {
-      alert('Profile photos must be JPEG, PNG, GIF, WebP, AVIF, or BMP images.');
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
@@ -1576,20 +1624,16 @@ function App() {
 
       const finalPfp = editPfpFile
         ? await uploadFile(editPfpFile, 'profile')
-        : await ensureHostedImage(editPfp || currentUser.pfp);
-
-      const authProfile = { displayName: editUsername.trim() };
-      if (!finalPfp.startsWith(FIRESTORE_UPLOAD_PREFIX) && !finalPfp.startsWith('data:image/')) {
-        authProfile.photoURL = finalPfp;
+        : editPfp || currentUser.pfp;
+      if (typeof finalPfp !== 'string' || !finalPfp) {
+        throw new Error('Choose a profile picture before saving your changes.');
       }
-      await updateProfile(user, authProfile);
-      await setDoc(doc(db, "users", user.uid), {
-        uid: user.uid,
+
+      const authProfileError = await persistProfile(user, {
         username: editUsername.trim(),
         bio: editBio.trim(),
-        pfp: finalPfp,
-        lastSeen: Date.now()
-      }, { merge: true });
+        pfp: finalPfp
+      });
 
       try {
         localStorage.setItem(`chat_bio_${user.uid}`, editBio.trim());
@@ -1610,7 +1654,9 @@ function App() {
       setEditPfp(finalPfp);
       setEditPfpFile(null);
       setIsEditingProfile(false);
-      alert("Profile updated permanently! ✨");
+      alert(authProfileError
+        ? `Profile saved, but Firebase Auth could not sync: ${authProfileError.message}`
+        : "Profile updated permanently! ✨");
     } catch (error) {
       console.error("Update Error:", error.message);
       alert(`Update Fail: ${getUploadErrorMessage(error)}`);
@@ -2101,6 +2147,10 @@ function App() {
             <div className="chat-messages-box" ref={chatContainerRef}>
               {((messages[activeChat.id] || []).map((msg, index) => {
                 const isMe = msg.senderId === getMyId();
+                const senderProfile = !isMe && msg.senderId !== AI_BOT_ID
+                  ? allRegisteredUsers.find(user => user.uid === msg.senderId)
+                    || usersList.find(user => user.uid === msg.senderId)
+                  : null;
                 const totalSeen = msg.seenBy?.length > 1; 
                 const isLatestMessage = index === (messages[activeChat.id] || []).length - 1; 
 
@@ -2112,7 +2162,7 @@ function App() {
                     <div style={{ display: 'flex', alignItems: 'flex-end', width: '100%', justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
                       {!isMe && (
                         <UploadedMedia
-                          mediaUrl={msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderId}`}
+                          mediaUrl={senderProfile?.pfp || msg.pfp || `https://api.dicebear.com/7.x/adventurer/svg?seed=${msg.senderId}`}
                           alt="user-pfp" 
                           className="message-avatar" 
                           onError={(e) => { e.target.src = 'https://api.dicebear.com/7.x/adventurer/svg?seed=fallback'; }} 
