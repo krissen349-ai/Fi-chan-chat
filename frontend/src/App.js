@@ -791,7 +791,7 @@ function App() {
           data.title || 'New message',
           {
             body: data.body || 'You received a new message.',
-            icon: data.icon || '/fi-chan-logo.jpg',
+            icon: data.icon || '/fi-chan-logo.png',
             data: { url: data.url || '/', chatId: data.chatId || '' }
           }
         ));

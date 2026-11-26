@@ -20,7 +20,7 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = data.title || payload.notification?.title || 'Fi-chan Chat';
   const notificationOptions = {
     body: data.body || payload.notification?.body || 'You received a new message.',
-    icon: data.icon || '/fi-chan-logo.jpg',
+    icon: data.icon || '/fi-chan-logo.png',
     data: { url: data.url || '/', chatId: data.chatId || '' }
   };
 
