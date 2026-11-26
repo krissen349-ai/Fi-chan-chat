@@ -26,8 +26,64 @@ service cloud.firestore {
 
     function isPrivateFileChunk(messageId, messageData) {
       return messageId.matches('^fi-file-.*$')
-        || messageData.keys()
-          .hasAny(['_fiUploadChunk', 'data', 'size', 'contentType', 'chunkIndex', 'chunkCount', 'uploadId']);
+        || messageData.keys().hasAny([
+          '_fiUploadChunk', 'data', 'size', 'contentType', 'chunkIndex',
+          'chunkCount', 'fileId', 'ownerUid'
+        ]);
+    }
+
+    function isValidPrivateFileChunk(messageId) {
+      let chunk = request.resource.data;
+      return messageId.matches('^fi-file-[0-9a-fA-F-]{36}-[0-9]+$')
+        && chunk.keys().hasAll([
+          'fileName', 'contentType', 'size', 'chunkCount', 'timestampRaw',
+          '_fiUploadChunk', 'fileId', 'ownerUid', 'chunkIndex', 'data'
+        ])
+        && chunk.keys().hasOnly([
+          'fileName', 'contentType', 'size', 'chunkCount', 'timestampRaw',
+          '_fiUploadChunk', 'fileId', 'ownerUid', 'chunkIndex', 'data'
+        ])
+        && chunk._fiUploadChunk == true
+        && chunk.fileId is string
+        && chunk.fileId.matches('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+        && chunk.ownerUid == request.auth.uid
+        && chunk.fileName is string
+        && chunk.fileName.size() <= 180
+        && chunk.contentType is string
+        && chunk.contentType.size() <= 255
+        && chunk.size is int
+        && chunk.size > 0
+        && chunk.size <= 20 * 1024 * 1024
+        && chunk.chunkCount is int
+        && chunk.chunkCount > 0
+        && chunk.chunkCount <= 40
+        && chunk.size > (chunk.chunkCount - 1) * 525000
+        && chunk.size <= chunk.chunkCount * 525000
+        && chunk.chunkIndex is int
+        && chunk.chunkIndex >= 0
+        && chunk.chunkIndex < chunk.chunkCount
+        && chunk.timestampRaw is int
+        && chunk.data is string
+        && chunk.data.size() > 0
+        && chunk.data.size() <= 700000
+        && (
+          (chunk.chunkIndex < chunk.chunkCount - 1 && chunk.data.size() == 700000)
+          || (chunk.chunkIndex == chunk.chunkCount - 1 && chunk.data.size() <= 700000)
+        );
+    }
+
+    function isValidSeenUpdate() {
+      let previousSeenBy = resource.data.get('seenBy', []);
+      let nextSeenBy = request.resource.data.get('seenBy', []);
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seenBy'])
+        && previousSeenBy is list
+        && nextSeenBy is list
+        && resource.data.keys().hasAny(['senderId'])
+        && resource.data.senderId != request.auth.uid
+        && !(request.auth.uid in previousSeenBy)
+        && request.auth.uid in nextSeenBy
+        && nextSeenBy.hasAll(previousSeenBy)
+        && nextSeenBy.size() == previousSeenBy.size() + 1;
     }
 
     match /users/{userId} {
@@ -67,19 +123,50 @@ service cloud.firestore {
 
       allow create: if isPrivateChatParticipant(chatId)
         && (
-          request.resource.data.senderId == request.auth.uid
-          || request.resource.data.senderId == 'ai-bot'
-        )
-        && !isPrivateFileChunk(messageId, request.resource.data);
+          isValidPrivateFileChunk(messageId)
+          || (
+            !isPrivateFileChunk(messageId, request.resource.data)
+            && (
+              request.resource.data.senderId == request.auth.uid
+              || request.resource.data.senderId == 'ai-bot'
+            )
+          )
+        );
 
       allow update: if isPrivateChatParticipant(chatId)
-        && !isPrivateFileChunk(messageId, resource.data)
-        && !isPrivateFileChunk(messageId, request.resource.data)
-        && resource.data.senderId == request.auth.uid;
+        && (
+          isValidSeenUpdate()
+          || (
+            !isPrivateFileChunk(messageId, resource.data)
+            && !isPrivateFileChunk(messageId, request.resource.data)
+            && resource.data.senderId == request.auth.uid
+          )
+        );
 
       allow delete: if isPrivateChatParticipant(chatId)
-        && !isPrivateFileChunk(messageId, resource.data)
-        && resource.data.senderId == request.auth.uid;
+        && (
+          (resource.data.keys().hasAny(['_fiUploadChunk'])
+            && resource.data._fiUploadChunk == true
+            && resource.data.ownerUid == request.auth.uid)
+          || (
+            !isPrivateFileChunk(messageId, resource.data)
+            && resource.data.senderId == request.auth.uid
+          )
+        );
+    }
+
+    match /private_chats/{chatId}/typing/{userId} {
+      allow read: if isPrivateChatParticipant(chatId);
+
+      allow create, update: if isPrivateChatParticipant(chatId)
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['uid', 'isTyping', 'updatedAt'])
+        && request.resource.data.uid == userId
+        && request.resource.data.isTyping is bool
+        && request.resource.data.updatedAt is timestamp;
+
+      allow delete: if isPrivateChatParticipant(chatId)
+        && request.auth.uid == userId;
     }
   }
 }

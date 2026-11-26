@@ -22,6 +22,7 @@ import {
 import { 
   collection, 
   addDoc, 
+  arrayUnion,
   query, 
   orderBy, 
   onSnapshot, 
@@ -30,7 +31,10 @@ import {
   deleteDoc, 
   doc,     
   setDoc,
-  getDoc
+  getDoc,
+  updateDoc,
+  writeBatch,
+  serverTimestamp
 } from 'firebase/firestore';
 
 const LineIcon = ({ name, size = 19 }) => {
@@ -92,6 +96,7 @@ const FIRESTORE_UPLOAD_PREFIX = 'fi-upload:';
 const GROUP_UPLOAD_PREFIX = 'fi-group-file:';
 const PRIVATE_UPLOAD_PREFIX = 'fi-private-file:';
 const UPLOAD_CHUNK_BYTES = 525000;
+const UPLOAD_CHUNKS_PER_BATCH = 10;
 const PRIVATE_CHAT_FILE_MAX_BYTES = 20 * 1024 * 1024;
 const GROUP_CHAT_FILE_MAX_BYTES = 15 * 1024 * 1024;
 const PRIVATE_CHAT_FILE_MAX_CHUNKS = Math.ceil(PRIVATE_CHAT_FILE_MAX_BYTES / UPLOAD_CHUNK_BYTES);
@@ -364,33 +369,62 @@ const uploadFile = async (file, kind, chatId = null) => {
     return `${GROUP_UPLOAD_PREFIX}${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
   }
 
-  await ensurePrivateChatJoined(chatId);
-  await emitSocketAcknowledgement('private_file_start', {
-    fileId,
-    chatId,
-    chunkCount,
+  const messagesRef = collection(db, 'private_chats', chatId, 'messages');
+  const safeName = Array.from(file.name || 'upload', character => {
+    const codePoint = character.codePointAt(0);
+    return character === '/' || character === '\\' || codePoint < 32 || (codePoint >= 127 && codePoint <= 159)
+      ? '_'
+      : character;
+  }).join('')
+    .slice(-180);
+  const metadata = {
+    fileName: safeName || 'upload',
+    contentType: file.type || 'application/octet-stream',
     size: file.size,
-    contentType: file.type || 'application/octet-stream'
-  });
+    chunkCount,
+    timestampRaw: Date.now(),
+    _fiUploadChunk: true,
+    fileId,
+    ownerUid: user.uid
+  };
+  let committedChunks = 0;
   try {
-    for (let index = 0; index < chunkCount; index += 1) {
-      const byteStart = index * UPLOAD_CHUNK_BYTES;
-      const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
-      let binaryChunk = '';
-      for (let offset = 0; offset < fileChunk.length; offset += 32768) {
-        binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
+    for (let batchStart = 0; batchStart < chunkCount; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
+      const batch = writeBatch(db);
+      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, chunkCount);
+      for (let index = batchStart; index < batchEnd; index += 1) {
+        const byteStart = index * UPLOAD_CHUNK_BYTES;
+        const fileChunk = new Uint8Array(await file.slice(byteStart, byteStart + UPLOAD_CHUNK_BYTES).arrayBuffer());
+        let binaryChunk = '';
+        for (let offset = 0; offset < fileChunk.length; offset += 32768) {
+          binaryChunk += String.fromCharCode(...fileChunk.subarray(offset, Math.min(offset + 32768, fileChunk.length)));
+        }
+        batch.set(doc(messagesRef, `fi-file-${fileId}-${index}`), {
+          ...metadata,
+          chunkIndex: index,
+          data: btoa(binaryChunk)
+        });
       }
-      const data = btoa(binaryChunk);
-      cachePrivateFileChunk({ fileId, chunkIndex: index, chunkCount, data });
-      await emitSocketAcknowledgement('private_file_chunk', { fileId, chunkIndex: index, data });
+      await batch.commit();
+      committedChunks = batchEnd;
     }
-    await emitSocketAcknowledgement('private_file_finish', { fileId });
   } catch (error) {
-    socket.emit('private_file_cancel', { fileId });
+    for (let batchStart = 0; batchStart < committedChunks; batchStart += UPLOAD_CHUNKS_PER_BATCH) {
+      const cleanupBatch = writeBatch(db);
+      const batchEnd = Math.min(batchStart + UPLOAD_CHUNKS_PER_BATCH, committedChunks);
+      for (let index = batchStart; index < batchEnd; index += 1) {
+        cleanupBatch.delete(doc(messagesRef, `fi-file-${fileId}-${index}`));
+      }
+      try {
+        await cleanupBatch.commit();
+      } catch (cleanupError) {
+        console.error('Could not clean up incomplete private file chunks:', cleanupError);
+      }
+    }
     throw error;
   }
 
-  return `${PRIVATE_UPLOAD_PREFIX}${chatId}:${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
+  return `${FIRESTORE_UPLOAD_PREFIX}${chatId}:${fileId}:${chunkCount}`;
 };
 
 const ensureHostedImage = async (image) => {
@@ -591,6 +625,10 @@ function App() {
   currentUserRef.current = currentUser;
   const activeChatRef = useRef(activeChat);
   activeChatRef.current = activeChat;
+  const privateTypingTimerRef = useRef(null);
+  const privateTypingChatRef = useRef(null);
+  const privateTypingLastSentAtRef = useRef(0);
+  const seenUpdatePendingRef = useRef(new Set());
 
   const messagesEndRef = useRef(null);
   const chatContainerRef = useRef(null);
@@ -608,6 +646,30 @@ function App() {
   const getAiBackendUrl = () => getBackendBaseUrl();
 
   const getMyId = useCallback(() => auth.currentUser?.uid || currentUser?.uid || socket.id, [currentUser]);
+
+  const updatePrivateTyping = useCallback((chatId, isTyping) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    setDoc(doc(db, 'private_chats', chatId, 'typing', uid), {
+      uid,
+      isTyping,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch(error => {
+      console.error('Private typing status update failed:', error);
+      setNotificationStatus('Private typing status could not sync. Check Firestore access and reload.');
+    });
+  }, []);
+
+  const stopPrivateTyping = useCallback((chatId) => {
+    if (privateTypingTimerRef.current) {
+      window.clearTimeout(privateTypingTimerRef.current);
+      privateTypingTimerRef.current = null;
+    }
+    if (privateTypingChatRef.current !== chatId) return;
+    privateTypingChatRef.current = null;
+    privateTypingLastSentAtRef.current = 0;
+    updatePrivateTyping(chatId, false);
+  }, [updatePrivateTyping]);
 
   const registerPushToken = useCallback((token) => {
     socket.timeout(5000).emit('register_push_token', { token }, (error, result) => {
@@ -706,6 +768,10 @@ function App() {
   }, [isLoggedIn, enableNotifications]);
 
   const setActiveChat = useCallback((chatObj) => {
+    const previousChat = activeChatRef.current;
+    if (previousChat?.type === 'private' && previousChat.id !== chatObj?.id) {
+      stopPrivateTyping(previousChat.id);
+    }
     activeChatRef.current = chatObj;
     setActiveChatState(chatObj);
     if (chatObj) {
@@ -713,7 +779,7 @@ function App() {
     } else {
       del('chat_active_chat').catch(err => console.error("IDB Del Error:", err));
     }
-  }, []);
+  }, [stopPrivateTyping]);
 
   useEffect(() => {
     if (activeChat?.type !== 'private') return;
@@ -839,10 +905,13 @@ function App() {
           }
           if (!result.verified) {
             socketUserReadyRef.current = false;
-            setNotificationStatus('Device registration requires valid Firebase Admin credentials on the chat server.');
+            setNotificationStatus('Chat server Admin verification failed; push alerts and older temporary private files may be unavailable.');
             return;
           }
           socketUserReadyRef.current = true;
+          setNotificationStatus(current => current === 'Chat server Admin verification failed; push alerts and older temporary private files may be unavailable.'
+            ? ''
+            : current);
           if (activeChatRef.current?.type === 'private') {
             ensurePrivateChatJoined(activeChatRef.current.id)
               .catch(error => setNotificationStatus(error.message));
@@ -912,6 +981,13 @@ function App() {
   }, [messages, activeChat]);
 
   useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container || !activeChat || !typingStatus[activeChat.id]?.isTyping) return;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceFromBottom <= 100) container.scrollTop = container.scrollHeight;
+  }, [typingStatus, activeChat]);
+
+  useEffect(() => {
     if (!activeChat) return;
     const currentChatMessages = messages[activeChat.id] || [];
     if (currentChatMessages.length > 0) {
@@ -919,11 +995,45 @@ function App() {
       const seenArray = Array.isArray(lastMessage.seenBy) ? lastMessage.seenBy : [];
       const myId = getMyId();
       if (lastMessage.senderId !== myId && !seenArray.includes(myId)) {
-        socket.emit("messageSeen", {
-          chatId: activeChat.id,
-          messageId: lastMessage.id,
-          userId: myId
-        });
+        if (activeChat.type === 'private' && auth.currentUser?.uid) {
+          const pendingKey = `${activeChat.id}:${lastMessage.id}:${myId}`;
+          if (seenUpdatePendingRef.current.has(pendingKey)) return;
+          seenUpdatePendingRef.current.add(pendingKey);
+          const messageQuery = query(
+            collection(db, 'private_chats', activeChat.id, 'messages'),
+            where('id', '==', lastMessage.id)
+          );
+          getDocs(messageQuery)
+            .then(snapshot => {
+              if (snapshot.empty) throw new Error('The message could not be found in Firestore.');
+              return Promise.all(snapshot.docs.map(messageDoc => updateDoc(
+                messageDoc.ref,
+                { seenBy: arrayUnion(myId) }
+              )));
+            })
+            .then(() => {
+              setMessages(previous => {
+                const currentMessages = previous[activeChat.id] || [];
+                const updatedMessages = currentMessages.map(message => (
+                  message.id === lastMessage.id
+                    ? { ...message, seenBy: Array.from(new Set([...(message.seenBy || []), myId])) }
+                    : message
+                ));
+                return { ...previous, [activeChat.id]: updatedMessages };
+              });
+            })
+            .catch(error => {
+              console.error('Private message seen update failed:', error);
+              setNotificationStatus('Seen status could not sync. Check Firestore access and reload.');
+            })
+            .finally(() => seenUpdatePendingRef.current.delete(pendingKey));
+        } else {
+          socket.emit("messageSeen", {
+            chatId: activeChat.id,
+            messageId: lastMessage.id,
+            userId: myId
+          });
+        }
       }
     }
   }, [messages, activeChat, getMyId]);
@@ -970,6 +1080,7 @@ function App() {
 
    // --- Handlers ---
   const handleUserTyping = (data) => {
+     if (typeof data.chatId !== 'string' || data.chatId.includes('--')) return;
     setTypingStatus((prev) => ({
       ...prev,
       [data.chatId]: { isTyping: data.isTyping, user: data.username },
@@ -977,6 +1088,7 @@ function App() {
   };
 
   const handleUserSeenUpdate = ({ chatId, messageId, userId }) => {
+    if (typeof chatId !== 'string' || chatId.includes('--')) return;
     setMessages((prev) => {
       const updated = { ...prev };
       const chatMsgs = updated[chatId] ? [...updated[chatId]] : [];
@@ -1094,6 +1206,46 @@ function App() {
       return () => unsubscribe();
     }
   }, [activeChat]);
+
+  useEffect(() => {
+    if (!isLoggedIn || activeChat?.type !== 'private' || !auth.currentUser?.uid) return;
+    const participants = activeChat.id.split('--');
+    if (participants.length !== 2) return;
+    const peerUid = participants.find(uid => uid !== auth.currentUser.uid);
+    if (!peerUid) return;
+
+    let expiryTimer;
+    const unsubscribe = onSnapshot(doc(db, 'private_chats', activeChat.id, 'typing', peerUid), snapshot => {
+      if (expiryTimer) window.clearTimeout(expiryTimer);
+      const typingData = snapshot.data();
+      const updatedAt = typingData?.updatedAt?.toMillis?.();
+      const expiresIn = 5000 - (Date.now() - updatedAt);
+      const isTyping = typingData?.uid === peerUid
+        && typingData.isTyping === true
+        && Number.isFinite(updatedAt)
+        && expiresIn > 0;
+      setTypingStatus(previous => ({
+        ...previous,
+        [activeChat.id]: { isTyping, user: activeChat.name }
+      }));
+      if (isTyping) {
+        expiryTimer = window.setTimeout(() => {
+          setTypingStatus(previous => ({
+            ...previous,
+            [activeChat.id]: { isTyping: false, user: activeChat.name }
+          }));
+        }, expiresIn);
+      }
+    }, error => {
+      console.error('Private typing status listener failed:', error);
+      setNotificationStatus('Private typing status could not load. Check Firestore access and reload.');
+    });
+
+    return () => {
+      if (expiryTimer) window.clearTimeout(expiryTimer);
+      unsubscribe();
+    };
+  }, [isLoggedIn, activeChat?.id, activeChat?.name, activeChat?.type]);
 
   const startRecording = async () => {
     try {
@@ -1478,7 +1630,11 @@ function App() {
       replyTo: msgObject.replyTo
     });
     
-    socket.emit('typing', { chatId: activeChat.id, username: currentUser?.username || 'User', isTyping: false });
+    if (activeChat.type === 'private') {
+      stopPrivateTyping(activeChat.id);
+    } else {
+      socket.emit('typing', { chatId: activeChat.id, username: currentUser?.username || 'User', isTyping: false });
+    }
 
     const isGlobal = activeChat.id === 'global-group' || activeChat.id === 'global' || activeChat.name === 'Global Group';
     if (!isGlobal && activeChat.type === 'private') {
@@ -1620,10 +1776,29 @@ function App() {
 
   const handleTypingInput = (e) => {
     setTypedMessage(e.target.value);
+    if (!activeChat) return;
     const isTyping = e.target.value.length > 0;
-    if (activeChat) {
+    if (activeChat.type !== 'private') {
       socket.emit('typing', { chatId: activeChat.id, username: currentUser?.username || 'User', isTyping });
+      return;
     }
+
+    const chatId = activeChat.id;
+    if (!isTyping) {
+      stopPrivateTyping(chatId);
+      return;
+    }
+    if (privateTypingChatRef.current && privateTypingChatRef.current !== chatId) {
+      stopPrivateTyping(privateTypingChatRef.current);
+    }
+    const now = Date.now();
+    if (privateTypingChatRef.current !== chatId || now - privateTypingLastSentAtRef.current >= 2000) {
+      privateTypingChatRef.current = chatId;
+      updatePrivateTyping(chatId, true);
+      privateTypingLastSentAtRef.current = now;
+    }
+    if (privateTypingTimerRef.current) window.clearTimeout(privateTypingTimerRef.current);
+    privateTypingTimerRef.current = window.setTimeout(() => stopPrivateTyping(chatId), 1500);
   };
 
   const handleCreateGroup = (e) => {
@@ -1957,7 +2132,7 @@ function App() {
 
   const currentTyping = activeChat ? typingStatus[activeChat.id] : null;
   const activePeerUid = activeChat?.type === 'private'
-    ? activeChat.userObj?.uid || activeChat.id.split('--').find(uid => uid !== auth.currentUser?.uid)
+    ? activeChat.id.split('--').find(uid => uid !== auth.currentUser?.uid)
     : null;
   const activePeerOnline = Boolean(activePeerUid
     && usersList.some(user => user.uid === activePeerUid && user.online));
