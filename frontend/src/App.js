@@ -91,6 +91,9 @@ const FIRESTORE_UPLOAD_PREFIX = 'fi-upload:';
 const GROUP_UPLOAD_PREFIX = 'fi-group-file:';
 const UPLOAD_CHUNK_BYTES = 525000;
 const UPLOAD_CHUNKS_PER_BATCH = 10;
+const PRIVATE_CHAT_FILE_MAX_BYTES = 20 * 1024 * 1024;
+const GROUP_CHAT_FILE_MAX_BYTES = 15 * 1024 * 1024;
+const PRIVATE_CHAT_FILE_MAX_CHUNKS = Math.ceil(PRIVATE_CHAT_FILE_MAX_BYTES / UPLOAD_CHUNK_BYTES);
 const PROFILE_PHOTO_MAX_BYTES = 500000;
 const uploadedFileUrlCache = new Map();
 const groupFileChunkCache = new Map();
@@ -192,7 +195,8 @@ const getUploadedFileObjectUrl = async (fileUrl) => {
   const [chatId, uploadId, count] = fileId.split(':');
   if (uploadId && chatId && count) {
     const chunkCount = Number(count);
-    if (!/^[0-9a-f-]{36}$/i.test(uploadId) || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 30) {
+    if (!/^[0-9a-f-]{36}$/i.test(uploadId) || !Number.isInteger(chunkCount)
+      || chunkCount < 1 || chunkCount > PRIVATE_CHAT_FILE_MAX_CHUNKS) {
       throw new Error('This shared file link is invalid.');
     }
     const cacheKey = `${chatId}:${uploadId}`;
@@ -266,10 +270,16 @@ const uploadFile = async (file, kind, chatId = null) => {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in before uploading files.');
   if (!['chat', 'profile'].includes(kind)) throw new Error('Invalid upload type.');
-  const maxBytes = kind === 'profile' ? 10 * 1024 * 1024 : 15 * 1024 * 1024;
+  const isPrivateChat = kind === 'chat' && typeof chatId === 'string' && chatId.includes('--');
+  const maxBytes = kind === 'profile'
+    ? 10 * 1024 * 1024
+    : isPrivateChat ? PRIVATE_CHAT_FILE_MAX_BYTES : GROUP_CHAT_FILE_MAX_BYTES;
   if (!file.size) throw new Error('Empty files cannot be uploaded.');
   if (file.size > maxBytes) {
-    throw new Error(kind === 'profile' ? 'Profile photos must be 10 MB or smaller.' : 'Chat files must be 15 MB or smaller.');
+    const message = kind === 'profile'
+      ? 'Profile photos must be 10 MB or smaller.'
+      : isPrivateChat ? 'Private chat files must be 20 MB or smaller.' : 'Group chat files must be 15 MB or smaller.';
+    throw new Error(message);
   }
 
   if (kind === 'profile') {
@@ -1399,9 +1409,12 @@ function App() {
     e.target.value = '';
     if (!files.length || !chat) return;
 
-    const oversizedFile = files.find(file => file.size > 15 * 1024 * 1024);
+    const isPrivateChat = chat.id.includes('--');
+    const maxFileBytes = isPrivateChat ? PRIVATE_CHAT_FILE_MAX_BYTES : GROUP_CHAT_FILE_MAX_BYTES;
+    const oversizedFile = files.find(file => file.size > maxFileBytes);
     if (oversizedFile) {
-      alert(`${oversizedFile.name} is over the 15 MB file limit.`);
+      const maxFileSize = isPrivateChat ? 20 : 15;
+      alert(`${oversizedFile.name} is over the ${maxFileSize} MB file limit.`);
       return;
     }
 

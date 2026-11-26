@@ -22,13 +22,13 @@ service cloud.firestore {
         && data.chunkIndex is int
         && data.chunkCount is int
         && data.chunkCount >= 1
-        && data.chunkCount <= 30
+        && data.chunkCount <= 40
         && data.chunkIndex >= 0
         && data.chunkIndex < data.chunkCount
         && messageId == 'fi-file-' + data.fileId + '-' + string(data.chunkIndex)
         && data.size is int
         && data.size > 0
-        && data.size <= 15 * 1024 * 1024
+        && data.size <= 20 * 1024 * 1024
         && data.fileName is string
         && data.fileName.size() <= 180
         && data.contentType is string
