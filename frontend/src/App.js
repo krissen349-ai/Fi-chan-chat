@@ -153,6 +153,18 @@ const emitSocketAcknowledgement = (eventName, data) => new Promise((resolve, rej
   });
 });
 
+const ensurePrivateChatJoined = chatId => new Promise((resolve, reject) => {
+  socket.timeout(5000).emit('join_chat', chatId, (timeoutError, response) => {
+    if (timeoutError) {
+      reject(new Error('Could not connect to this private chat. Reconnect and try again.'));
+    } else if (!response?.ok) {
+      reject(new Error(response?.error || 'Could not join this private chat.'));
+    } else {
+      resolve(response);
+    }
+  });
+});
+
 const getGroupFileChunks = (fileId, chunkCount) => {
   const cached = groupFileChunkCache.get(fileId);
   if (cached?.chunkCount === chunkCount && cached.chunks.every(Boolean)) {
@@ -191,7 +203,13 @@ const getPrivateFileChunks = (chatId, fileId, chunkCount) => {
         resolve(chunks);
       }
     });
-    socket.emit('private_file_download', { chatId, fileId });
+    ensurePrivateChatJoined(chatId).then(() => {
+      socket.emit('private_file_download', { chatId, fileId });
+    }).catch(error => {
+      window.clearTimeout(timer);
+      privateFileChunkWaiters.delete(fileId);
+      reject(error);
+    });
   });
 };
 
@@ -346,6 +364,7 @@ const uploadFile = async (file, kind, chatId = null) => {
     return `${GROUP_UPLOAD_PREFIX}${fileId}:${chunkCount}:${encodeURIComponent(file.type || 'application/octet-stream')}`;
   }
 
+  await ensurePrivateChatJoined(chatId);
   await emitSocketAcknowledgement('private_file_start', {
     fileId,
     chatId,
@@ -775,7 +794,13 @@ function App() {
             if (savedChat && savedChat.type !== 'ai') {
               activeChatRef.current = savedChat;
               setActiveChatState(savedChat);
-              socket.emit('join_chat', savedChat.id);
+              if (savedChat.type === 'private') {
+                ensurePrivateChatJoined(savedChat.id).catch(error => {
+                  if (socketUserReadyRef.current) setNotificationStatus(error.message);
+                });
+              } else {
+                socket.emit('join_chat', savedChat.id);
+              }
             } else if (savedChat?.type === 'ai') {
               del('chat_active_chat');
             }
@@ -819,7 +844,8 @@ function App() {
           }
           socketUserReadyRef.current = true;
           if (activeChatRef.current?.type === 'private') {
-            socket.emit('join_chat', activeChatRef.current.id);
+            ensurePrivateChatJoined(activeChatRef.current.id)
+              .catch(error => setNotificationStatus(error.message));
           }
           if (pushTokenRef.current) registerPushToken(pushTokenRef.current);
         });
@@ -1200,7 +1226,13 @@ function App() {
 
   const selectChat = useCallback((chatObj) => {
     setActiveChat(chatObj);
-    socket.emit('join_chat', chatObj.id);
+    if (chatObj.type === 'private') {
+      ensurePrivateChatJoined(chatObj.id).catch(error => {
+        if (socketUserReadyRef.current) setNotificationStatus(error.message);
+      });
+    } else {
+      socket.emit('join_chat', chatObj.id);
+    }
     setReplyToMsg(null);
     setEditMsg(null);
     set('chat_active_chat', chatObj).catch(err => console.error("IDB Set Error:", err));
@@ -1924,6 +1956,11 @@ function App() {
   }
 
   const currentTyping = activeChat ? typingStatus[activeChat.id] : null;
+  const activePeerUid = activeChat?.type === 'private'
+    ? activeChat.userObj?.uid || activeChat.id.split('--').find(uid => uid !== auth.currentUser?.uid)
+    : null;
+  const activePeerOnline = Boolean(activePeerUid
+    && usersList.some(user => user.uid === activePeerUid && user.online));
 
   return (
     <div className="app-layout" onClick={() => setActiveMenuMsgId(null)}>
@@ -2028,8 +2065,7 @@ function App() {
                 <p className="empty-msg">No other users online or registered yet.</p>
               ) : (
                 (allRegisteredUsers.length > 0 ? allRegisteredUsers : usersList).map(user => {
-                  const recentlySeen = Number.isFinite(user.lastSeen) && Date.now() - user.lastSeen < 90000;
-                  const isOnline = usersList.some(u => u.uid === user.uid || u.id === user.id) || recentlySeen;
+                  const isOnline = usersList.some(onlineUser => onlineUser.uid === user.uid && onlineUser.online);
 
                   return (
                     <div 
@@ -2140,7 +2176,9 @@ function App() {
               )}
               <div className="header-details">
                 <h3>{activeChat.name}</h3>
-                <p className="sub-header-info">{activeChat.type === 'group' ? 'Public Room Channel' : '● Active'}</p>
+                <p className="sub-header-info">{activeChat.type === 'group'
+                  ? 'Public Room Channel'
+                  : activePeerOnline ? '● Online' : '○ Offline'}</p>
               </div>
             </div>
 

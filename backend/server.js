@@ -1295,7 +1295,23 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('typing', (data) => {
+    socket.on('typing', (data = {}) => {
+        if (typeof data.chatId !== 'string' || !data.chatId) return;
+        if (data.chatId.includes('--')) {
+            const user = users[socket.id];
+            const participants = getPrivateChatParticipants(data.chatId);
+            if (!user?.verifiedUid || !participants?.includes(user.verifiedUid)) return;
+            const typingUpdate = {
+                chatId: data.chatId,
+                username: user.username || 'User',
+                isTyping: Boolean(data.isTyping)
+            };
+            participants
+                .filter(uid => uid !== user.verifiedUid)
+                .forEach(uid => io.to(uid).emit('user_typing', typingUpdate));
+            return;
+        }
+
         socket.to(data.chatId).emit('user_typing', {
             chatId: data.chatId,
             username: data.username,
@@ -1316,7 +1332,25 @@ io.on('connection', (socket) => {
         io.emit('update_groups', groups);
     });
 
-    socket.on('messageSeen', ({ chatId, messageId, userId }) => {
+    socket.on('messageSeen', ({ chatId, messageId, userId } = {}) => {
+        if (typeof chatId === 'string' && chatId.includes('--')) {
+            const user = users[socket.id];
+            const participants = getPrivateChatParticipants(chatId);
+            if (!user?.verifiedUid || !participants?.includes(user.verifiedUid)) return;
+
+            const trustedUserId = user.verifiedUid;
+            const targetMsg = messages[chatId]?.find(message => message.id === messageId);
+            if (targetMsg) {
+                const seenBy = Array.isArray(targetMsg.seenBy) ? targetMsg.seenBy : [];
+                if (!seenBy.includes(trustedUserId)) targetMsg.seenBy = [...seenBy, trustedUserId];
+            }
+            const seenUpdate = { chatId, messageId, userId: trustedUserId };
+            participants
+                .filter(uid => uid !== trustedUserId)
+                .forEach(uid => io.to(uid).emit('userSeenUpdate', seenUpdate));
+            return;
+        }
+
         if (messages[chatId]) {
             const targetMsg = messages[chatId].find(m => m.id === messageId);
             if (targetMsg && !targetMsg.seenBy.includes(userId)) {
