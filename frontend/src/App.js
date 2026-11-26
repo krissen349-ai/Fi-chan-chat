@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import io from 'socket.io-client';
 import './App.css';
-import appLogo from './Fi-chan-chat.jpg'; 
+import appLogo from './Fi-chan-chat.png'; 
 import Gifts from './Gifts'; 
 import GameModal from './GameModal';
 import GamesLobby from './GamesLobby';
